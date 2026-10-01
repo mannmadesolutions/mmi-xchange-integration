@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Logs, dumps, local data — never commit
+logs/
+*.log
+*.sql
+*.sql.gz
+*.zip
+*.tar.gz
+*.bak
+*.csv
+.env
+.env.*
+*.json.bak
+xchange-*.json
+data/
+exports/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

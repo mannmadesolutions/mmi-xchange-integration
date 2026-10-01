@@ -1,0 +1,1144 @@
+/* ── MMI Xchange admin console ────────────────────────────────────────── */
+
+.mmi-xchange-wrap .nav-tab .dashicons {
+    vertical-align: middle;
+    position: relative;
+    top: -1px;
+}
+
+/* Visual separator between the two header check buttons (Test Connection /
+   Test Order API) — mmi-header-actions is a plain flex row with no divider
+   of its own between arbitrary children. */
+.mmi-x-header-divider {
+    display: inline-block;
+    width: 1px;
+    height: 20px;
+    background: #dcdcde;
+    margin: 0 2px;
+}
+
+/* ── Settings tab: "Account & Connection" section shell ──────────────────
+   Deliberately matches the visual language of mmi-data-pipeline's
+   .mmi-profile-section/.mmi-process-section/.mmi-collapsible-section card
+   pattern (white card, subtle border+shadow, collapsible header with a
+   rotating arrow) — those classes live in that plugin's own CSS, so rather
+   than importing a second plugin's stylesheet or duplicating its exact
+   class names (risking the two copies silently drifting apart, see
+   AGENTS.md's Incident History on duplicated shared-looking CSS), this is a
+   plugin-scoped equivalent under the existing mmi-x- namespace, styled to
+   look the same. ─────────────────────────────────────────────────────────── */
+/* The card shell/header/content/toggle themselves are now the shared
+   .mmi-collapsible-section family (mmi-suite-common.css) — this plugin's own
+   2 usages (Settings tab's "Account & Connection", Logs tab) are 2 of the 3
+   pre-shared-promotion duplicates that component's own doc comment names by
+   name. What's left here are this plugin's small local differences: its own
+   green brand accent on both sections' header icons, and a static (non-
+   pointer) cursor on the Logs section's header, which is never collapsible
+   (no click target) despite reusing the same card look. */
+#mmi-x-account-section .mmi-section-header h3 .dashicons,
+#mmi-x-logs-section .mmi-section-header h3 .dashicons {
+    color: #45852C;
+    font-size: 18px;
+}
+
+#mmi-x-logs-section .mmi-section-header {
+    cursor: default;
+}
+
+/* Now paired with the shared .mmi-flat-card (mmi-suite-common.css) in
+   markup for its actual shape (border, radius, shadow) — this local class
+   only adds the content padding/spacing .mmi-flat-card itself deliberately
+   doesn't provide (that class is also used bare, wrapping an edge-to-edge
+   toolbar+table combo whose own header strip carries its own padding; see
+   mmi-data-health's admin.css for that shape). Previously this defined its
+   own separate flat look (white bg, bottom-border only, no radius/shadow),
+   which is why this plugin's cards didn't match the shared
+   .mmi-collapsible-section-based cards used elsewhere on the same tabs
+   (Settings' "Account & Connection"/"Logs" sections) — same companion-class
+   pattern as mmi-data-pipeline's .mmi-profile-section.mmi-flat-card. */
+.mmi-xchange-card {
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.mmi-x-input,
+.mmi-x-select,
+.mmi-x-textarea {
+    padding: 6px 8px;
+    border: 1px solid #8c8f94;
+    border-radius: 4px;
+    min-width: 240px;
+}
+
+.mmi-x-input-narrow {
+    min-width: 90px;
+    max-width: 120px;
+}
+
+.mmi-x-textarea {
+    width: 100%;
+    min-height: 70px;
+}
+
+.mmi-x-inline-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.mmi-x-sync-meta {
+    color: #646970;
+    font-size: 13px;
+    margin-left: auto;
+}
+
+.mmi-x-field-row {
+    margin-bottom: 12px;
+}
+
+/* A lone row (no .mmi-label-grid stack around it) lays out as a simple
+   flex line. Stacked rows get their layout from the shared .mmi-label-grid
+   primitive (mmi-suite-common.css): the label column sizes to the widest
+   label, replacing the old fixed 220px label min-width, which "Store-Wide
+   Support Link Override" outgrew. */
+.mmi-x-field-row:not(.mmi-label-grid-row) {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.mmi-x-field-grid {
+    --mmi-label-grid-col-gap: 10px;
+    --mmi-label-grid-row-gap: 0;
+}
+
+/* Auto-fetch inputs fill the value column, as they did as a flex:1 item. */
+.mmi-x-field-grid > .mmi-x-field-row.mmi-x-field-row--auto-fetch > .mmi-x-field-input-wrap {
+    justify-self: stretch;
+}
+
+/* Status badges inside a stack keep their natural width. */
+.mmi-x-field-grid > .mmi-badge {
+    justify-self: start;
+}
+
+.mmi-x-field-row label:first-child {
+    font-weight: 600;
+}
+
+/* ── Finalize-timing diagnostic (Place Order tab) ──────────────────────── */
+
+.mmi-x-diagnostic {
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid #dcdcde;
+}
+
+.mmi-x-diagnostic h4 {
+    margin: 0 0 6px;
+}
+
+.mmi-x-diag-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 4px 0;
+}
+
+.mmi-x-diag-step .dashicons {
+    vertical-align: middle;
+    position: relative;
+    top: 2px;
+    flex: 0 0 auto;
+}
+
+.mmi-x-diag-step--ok .dashicons {
+    color: #00a32a;
+}
+
+.mmi-x-diag-step--fail .dashicons {
+    color: #d63638;
+}
+
+.mmi-x-diag-summary {
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+/* ── Data table: sortable + scrollable + resizable ─────────────────────── */
+
+.mmi-x-table-scroll {
+    max-height: 560px;
+    overflow: auto;
+    border: 1px solid #dcdcde;
+}
+
+/* Shorter variant for secondary/contextual tables (e.g. the Place Order
+   tab's Recent Orders panel) that shouldn't dominate the page the way the
+   dedicated Orders tab's full-height table does. */
+.mmi-x-table-scroll--compact {
+    max-height: 640px;
+}
+
+/* Vendor detail's "preview matched products" table — rendered inline inside
+   an already-open detail panel, so it's capped relative to viewport height
+   rather than a fixed pixel value like the two variants above. */
+.mmi-x-table-scroll--preview {
+    max-height: 50vh;
+}
+
+/* table-layout:fixed sources its column widths from an explicit <colgroup>
+   or per-<th> width (see initColumnResize() in admin-xchange.js) rather than
+   content — used by the two resizable Orders-tab tables; deliberately not
+   baked into the base .mmi-x-table rule below, since the Vendors/Preview
+   tables use natural (content-based) column sizing. */
+.mmi-x-table-fixed {
+    table-layout: fixed;
+}
+
+.mmi-x-table {
+    width: 100%;
+    /* `separate` (not `collapse`) + explicit thead `position: sticky` below —
+       Safari fails to keep a sticky <th> pinned when the table uses
+       border-collapse: collapse, so the header just scrolls away with the
+       body. box-shadow (not border-bottom) draws the header/body divider
+       instead, since `separate` no longer merges adjoining cell borders. */
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.mmi-x-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.mmi-x-table thead th {
+    position: sticky;
+    top: 0;
+    background: #f6f7f7;
+    z-index: 1;
+    text-align: left;
+    padding: 8px 10px;
+    box-shadow: inset 0 -1px 0 #dcdcde;
+    cursor: pointer;
+    user-select: none;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.mmi-x-table tbody td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #f0f0f1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.mmi-x-table tbody tr:hover {
+    background: #f6f7f7;
+    cursor: text;
+}
+
+.mmi-x-table .sort-icon::after {
+    content: '';
+    margin-left: 6px;
+}
+
+.mmi-x-table th.is-active-asc .sort-icon::after {
+    content: '▲';
+}
+
+.mmi-x-table th.is-active-desc .sort-icon::after {
+    content: '▼';
+}
+
+/* right: 0 (not a negative offset) — thead th below has overflow:hidden for
+   its text-ellipsis truncation, which silently clips away any part of this
+   handle drawn outside the cell's own border box, leaving only a sliver of
+   the intended grab target actually clickable. Keeping the handle entirely
+   inside the th's bounds is what makes it hittable. */
+.mmi-x-resize-handle {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+}
+
+/* ── Resizable-table default column widths ─────────────────────────────────
+   Default (unresized) widths for the two table-layout:fixed Orders-tab
+   tables. A user drag (initColumnResize() in admin-xchange.js) overrides
+   these at runtime via an inline style on the target element — a <col> for
+   #mmi-x-po-orders-table (has a <colgroup>) or the <th> itself for
+   #mmi-x-orders-table (no <colgroup>) — which is expected and correct; these
+   classes only supply the width before any resize has ever happened. */
+
+/* #mmi-x-po-orders-table — <colgroup><col> widths, one rule per column,
+   keyed to each <col>'s own data-resize-col value. Sized to sum well under
+   a typical admin content width now that the Fulfilled/Action columns are
+   gone (their content moved to a per-row color accent and the toolbar's
+   Fulfill button, respectively) — with table-layout:fixed + width:100%,
+   the browser stretches these proportionally to fill any leftover space,
+   so keeping the declared sum comfortably narrow is what keeps the table
+   from ever needing horizontal scroll on a normal-width screen. */
+.mmi-x-col-order     { width: 90px; }
+.mmi-x-col-source    { width: 60px; }
+.mmi-x-col-date      { width: 100px; }
+.mmi-x-col-status    { width: 90px; }
+.mmi-x-col-customer  { width: 170px; }
+.mmi-x-col-item      { width: 210px; }
+.mmi-x-col-total     { width: 100px; }
+.mmi-x-col-xpo       { width: 90px; }
+.mmi-x-col-xlicense  { width: 120px; }
+.mmi-x-col-xauth     { width: 90px; }
+.mmi-x-col-xccsa     { width: 80px; }
+
+/* #mmi-x-orders-table — no <colgroup>, widths set directly on each <th>. */
+.mmi-x-th-po      { width: 110px; }
+.mmi-x-th-date    { width: 110px; }
+.mmi-x-th-sku     { width: 110px; }
+.mmi-x-th-product { width: 220px; }
+.mmi-x-th-price   { width: 100px; }
+.mmi-x-th-map     { width: 90px; }
+.mmi-x-th-vendor  { width: 160px; }
+.mmi-x-th-license { width: 160px; }
+.mmi-x-th-auth    { width: 100px; }
+.mmi-x-th-ccsa    { width: 90px; }
+
+.mmi-x-actions-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.mmi-x-empty {
+    text-align: center;
+    color: #646970;
+    padding: 24px !important;
+}
+
+/* Genuine "still loading" state only — .mmi-x-empty on its own also covers
+   "No results" and error messages, which must never show a spinner, so
+   this is a separate, explicitly-applied modifier rather than baked into
+   the base class. flex (not the base's text-align) centers the spinner +
+   text as one inline unit. */
+.mmi-x-empty--loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+/* .mmi-loading's shared default is color:#fff (mmi-suite-common.css) —
+   built to sit on a colored .mmi-action-btn background. Against this
+   plain white/light empty-state background that's a white-on-white
+   spinner, effectively invisible (same fix shape as .mmi-x-loading-banner
+   .mmi-loading below, for the same underlying reason). */
+.mmi-x-empty--loading .mmi-loading {
+    color: #646970;
+}
+
+/* ── Badges ─────────────────────────────────────────────────────────────── */
+/* Shape + color now come entirely from the shared .mmi-badge component
+   (mmi-suite-common.css) + its .success/.warning/.error modifiers — this
+   plugin's own .mmi-x-badge--ok/--warn/--error/--neutral (mapped 1:1 onto
+   success/warning/error/plain) plus 4 modifiers (--pending/--accepted/
+   --declined/--expired) that grep confirmed were never actually referenced
+   anywhere in this plugin's markup or JS, are gone. */
+
+/* ── Status grid ────────────────────────────────────────────────────────── */
+
+.mmi-x-status-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(200px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+}
+
+.mmi-x-status-card {
+    background: #f6f7f7;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    padding: 14px 16px;
+}
+
+.mmi-x-status-card h3 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #646970;
+}
+
+.mmi-x-status-card--clickable {
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
+}
+
+.mmi-x-status-card--clickable:hover {
+    border-color: #8c8f94;
+}
+
+.mmi-x-status-card--active {
+    background: #fef3c7;
+    border-color: #f5c542;
+}
+
+.mmi-x-preview-no-match td {
+    background: #fef3c7;
+}
+
+.mmi-x-timestamp {
+    font-size: 12px;
+    color: #646970;
+    margin-top: 4px;
+}
+
+.mmi-x-issue-banner {
+    margin-top: 16px;
+    padding: 12px 16px;
+    background: #fef3c7;
+    border: 1px solid #f5c542;
+    border-radius: 4px;
+}
+
+.mmi-x-status {
+    margin-top: 10px;
+    font-size: 13px;
+}
+
+/* Real visual weight for #mmi-x-po-queue-status once it carries a real
+   outcome — a bare unstyled text line was easy to miss, especially for a
+   hard safety block (a fulfillment refused to prevent a duplicate real-money
+   XChange purchase), which is what made that block look like nothing had
+   happened at all. Empty (no state class) stays invisible, as before. */
+.mmi-x-status--busy,
+.mmi-x-status--success,
+.mmi-x-status--blocked,
+.mmi-x-status--error {
+    padding: 10px 14px;
+    border-radius: 4px;
+    border: 2px solid;
+    font-weight: 600;
+}
+
+.mmi-x-status--busy {
+    background: var(--mmi-info-bg);
+    border-color: var(--mmi-info-border);
+    color: var(--mmi-info-text);
+}
+
+.mmi-x-status--success {
+    background: var(--mmi-success-bg);
+    border-color: var(--mmi-success-border);
+    color: var(--mmi-success-text);
+}
+
+.mmi-x-status--blocked,
+.mmi-x-status--error {
+    background: var(--mmi-error-bg);
+    border-color: var(--mmi-error-border);
+    color: var(--mmi-error-text);
+}
+
+/* ── Per-field loading state (Email Customer modal) — the top banner says
+   *something* is loading; this shows admins exactly which fields are still
+   waiting on it, field by field, since license/download/support and
+   software name/logo arrive from separate fetches that don't all resolve
+   at once. ───────────────────────────────────────────────────────────── */
+.mmi-x-field-input-wrap {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+}
+.mmi-x-field-input-wrap .mmi-x-input {
+    width: 100%;
+}
+.mmi-x-field-row--auto-fetch.mmi-x-field-row--loading .mmi-x-input {
+    opacity: 0.5;
+}
+/* .mmi-loading's shared default (mmi-suite-common.css) is white, meant to
+   sit on a colored .mmi-action-btn background — invisible here, where it
+   overlays a plain input on the modal's white background. Positioned
+   inside .mmi-x-field-input-wrap so it sits over the input itself (the
+   "spinner overlay" originally asked for), not as a floating flex sibling
+   after it. Recolor via `color`, not border-color — the shared spinner is
+   a CSS mask now, not a bordered circle (see mmi-suite-common.css).
+   Centered via top:50% + a fixed margin-top (half the spinner's own 18px
+   height, not transform:translateY(-50%)) — this element already carries
+   .mmi-loading's own `animation: mmiSpin` (rotate(0→360deg)) on the SAME
+   `transform` property. A separate rule's static translateY(-50%) doesn't
+   compose with the animation's rotate() — one clobbers the other every
+   frame — which is what made this spinner visibly jump up and down
+   instead of just rotating in place. margin-top leaves `transform`
+   entirely free for the rotation. */
+.mmi-x-field-loading {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    margin-top: -9px;
+    color: var(--mmi-primary, #2271b1);
+}
+
+/* ── Loading banner (Email Customer modal) — makes an in-flight fetch that
+   may fall through to a CCSA portal lookup visible while it runs, instead
+   of a silent multi-second wait with no feedback. ──────────────────────── */
+.mmi-x-loading-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #fef3c7;
+    border: 1px solid #f2d98b;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin: 4px 0 16px;
+    color: #92400e;
+    font-size: 13px;
+}
+
+/* The shared .mmi-loading defaults to white (button-background assumption) —
+   invisible against this banner's light amber background. */
+.mmi-x-loading-banner .mmi-loading {
+    color: #92400e;
+}
+
+/* ── Preview panels (SKU catalog lookup, email order-summary) ─────────── */
+
+.mmi-x-preview-panel {
+    background: #f6f7f7;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    padding: 12px 16px;
+    margin: 4px 0 16px;
+}
+
+.mmi-x-preview-panel dl {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 16px;
+    margin: 0;
+}
+
+.mmi-x-preview-panel dt {
+    color: #646970;
+    font-size: 13px;
+}
+
+.mmi-x-preview-panel dd {
+    margin: 0;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+/* ── Recent Orders panel: expandable per-row live XChange detail ──────────
+   Modeled on WooCommerce's own order-preview modal (wc-backbone-modal-content)
+   — a compact header strip + a real product table — instead of the original
+   loose label/value <dl> stack, which read as mostly whitespace. */
+
+.mmi-x-po-order-row {
+    cursor: pointer;
+}
+
+/* Marketplace badge + email-confirmation status icon share one dedicated
+   Source column (mmi-x-po-source-cell), side by side, rather than the badge
+   living inline inside the Order # cell and a full-height guest-convert
+   panel stacking below it — keeps a row needing attention no taller than
+   any other row. */
+.mmi-x-po-source-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.mmi-x-po-order-badge {
+    display: block;
+}
+
+/* Small per-row indicator that a guest/relayed order needs (or is getting)
+   its real email confirmed — see renderEmailStatusIcon() in admin-xchange.js.
+   Plain text color, not a badge chip, with its own small hardcoded palette
+   (pre-dates this plugin's badges moving to the shared .mmi-badge component
+   below — no longer an exact color match to those, just a loosely similar
+   pending/done/error read). */
+.mmi-x-email-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    line-height: 1;
+    cursor: default;
+}
+.mmi-x-email-icon--pending {
+    color: #92400e;
+}
+.mmi-x-email-icon--done {
+    color: #1e6b1e;
+}
+.mmi-x-email-icon--error {
+    color: #991b1b;
+}
+
+/* Replaces the removed "Fulfilled" column — a colored accent on the row's
+   first cell instead of a dedicated column re-stating the same
+   fulfilled_po/"Pending" fact the PO # column already shows directly (the
+   real PO number once fulfilled). border-left (not a background tint) so
+   it adds a status signal without fighting the WC/Xchange column-group
+   background tints ([data-source="wc"/"xchange"] below) for the same cell. */
+.mmi-x-po-order-row > td:first-child {
+    border-left: 4px solid transparent;
+}
+.mmi-x-po-order-row.mmi-x-po-row--fulfilled > td:first-child {
+    border-left-color: var(--mmi-success-border, #28a745);
+}
+.mmi-x-po-order-row.mmi-x-po-row--pending > td:first-child {
+    border-left-color: var(--mmi-warning-border, #ff9800);
+}
+
+/* Product thumbnail added to the Item column — small enough to sit inline
+   with the truncated SKU/title text rather than growing the row height. */
+.mmi-x-po-item-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.mmi-x-po-item-thumb {
+    width: 24px;
+    height: 24px;
+    object-fit: cover;
+    border-radius: 3px;
+    border: 1px solid #dcdcde;
+    flex-shrink: 0;
+}
+.mmi-x-po-item-cell span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Plain colored text for the CCSA flag — deliberately not a badge chip
+   (mmi-x-badge), whose own background would sit differently than this
+   cell's shared [data-source="xchange"] tint, the one background every
+   sibling field cell in this column group (PO#/License/Auth#) is plain
+   text against. */
+.mmi-x-po-ccsa-flag {
+    color: var(--mmi-warning-text, #856404);
+    font-weight: 600;
+}
+
+.mmi-x-po-detail-row > td {
+    background: #fff;
+    padding: 0 !important;
+    border-top: 1px solid #dcdcde;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.mmi-x-po-detail-body {
+    padding: 16px 20px;
+}
+
+.mmi-x-po-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #dcdcde;
+    font-size: 14px;
+}
+
+/* Fulfill button — lives in this specific order's own detail header (see
+   renderDetailHtml()) rather than a shared toolbar button, so it appears
+   per row. Pushed to the far right via margin-left:auto so it reads as
+   this row's distinct action, not just another badge alongside status. */
+.mmi-x-po-detail-header .mmi-x-po-fulfill-btn {
+    margin-left: auto;
+}
+
+/* ── WC vs Xchange column grouping (merged Orders tab's Fulfillment Queue
+   table) — tints distinguish which system each column's data came from,
+   per this project's ask for "better column labelling" after the merge. ── */
+.mmi-x-thead-group-row th {
+    text-align: center;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    padding: 4px 8px;
+    border-bottom: 1px solid #dcdcde;
+}
+/* .mmi-x-table thead th (0,1,2) already sets its own background:#f6f7f7
+   and outranks a bare th[data-source] (0,1,1) — meaning every Xchange
+   header cell was silently falling back to the generic gray instead of the
+   cream #fdf8f0 its own body cells use. Qualifying the header half of this
+   rule with the same .mmi-x-table thead prefix (0,2,2) is what actually
+   wins; the plain td[data-source] half is untouched since tbody td has no
+   competing background rule to lose to. */
+.mmi-x-table thead th[data-source="wc"], td[data-source="wc"] {
+    background: #f6f7f7;
+}
+.mmi-x-table thead th[data-source="xchange"], td[data-source="xchange"] {
+    background: #fdf8f0;
+}
+
+/* ── Guest → customer convert widget (Orders tab detail view) — reuses
+   mmi-hub's mmi_guest_customer_convert AJAX action; styling kept local
+   since the widget's markup differs from mmi-hub's own metabox. ────── */
+.mmi-x-guest-convert {
+    margin: 10px 0;
+    padding: 10px 12px;
+    /* background: #fef3c7; */
+    border-left: 2px solid #f2d98b;
+    /* border-radius: 4px; */
+}
+.mmi-x-guest-warning {
+    color: #92400e;
+}
+
+/* ── Auto email-request status panel (renderAutoEmailStatusHtml()) — the
+   read-only counterpart to the manual form above, shown instead of it when
+   mmi-reverb-integration's automatic flow is handling this order. Neutral
+   blue rather than the manual panel's warning-amber background: this state
+   isn't asking the admin to do anything, just reporting progress. ──────── */
+.mmi-x-guest-convert--auto {
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+.mmi-x-guest-convert-manual-toggle {
+    text-decoration: underline;
+    cursor: pointer;
+}
+.mmi-x-guest-convert-manual-form {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #bfdbfe;
+}
+
+/* ── Fulfillment email history (Orders tab detail view) ──────────────── */
+.mmi-x-po-email-history {
+    margin: 10px 0;
+    padding: 10px 12px;
+    background: #f6f7f7;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+}
+.mmi-x-po-email-history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 13px;
+    flex-wrap: wrap;
+}
+
+/* ── Find Unlinked Orders / Xchange PO History collapsible sections ──────
+   Both use the shared .mmi-collapsible-section behavior (header/content/
+   toggle/.collapsed — mmi-suite-common.css) for their collapse mechanics,
+   and both now also carry .mmi-flat-card, same as every other section on
+   this tab ("1. Fulfillment Queue", "3. Place a Live PO") — see
+   .mmi-xchange-card's own comment above. Previously this pair instead
+   stripped their card chrome down to nothing (background/radius/shadow all
+   removed, header/content padding zeroed) specifically to avoid clashing
+   with .mmi-collapsible-section's own different default look — which meant
+   this tab rendered 3 different "card" appearances side by side (flat/
+   border-bottom-only, fully chromeless, and the shared component's own
+   rounded-shadow default) depending on which section you looked at. Now
+   every section shares one look instead.
+   .mmi-collapsible-section's own border-radius/box-shadow declarations sit
+   later in mmi-suite-common.css than .mmi-flat-card's — at equal
+   specificity they'd otherwise win over it for just those two properties,
+   so they're pinned back to .mmi-flat-card's own values here. Its
+   .mmi-section-header/.mmi-section-content defaults (the gray header strip,
+   14px content padding) are left alone rather than re-overridden — that's
+   the same rendering #mmi-x-account-section already uses on the Settings
+   tab, and it's the right visual cue that these two sections (unlike their
+   "1."/"3." siblings) are actually collapsible. */
+#mmi-x-orders-history-section,
+#mmi-x-po-linker-section {
+    border-radius: var(--mmi-flat-card-radius, 8px);
+    box-shadow: var(--mmi-flat-card-shadow, 0 1px 3px rgba(0,0,0,0.06));
+}
+
+.mmi-x-po-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+}
+
+.mmi-x-po-detail-table th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    color: #646970;
+    padding: 0 10px 8px;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.mmi-x-po-detail-table td {
+    padding: 10px;
+    border-bottom: 1px solid #f0f0f1;
+    font-size: 13px;
+    vertical-align: top;
+}
+
+.mmi-x-po-detail-table tr:last-child td {
+    border-bottom: none;
+}
+
+.mmi-x-po-detail-product {
+    font-weight: 600;
+}
+
+/* Semantic hooks for the 5 detail-table columns (Product/Qty/Cost/Paid/
+   Margin) — added so per-column styling/JS targeting doesn't require
+   nth-child() guessing. Column order/widths are unchanged, purely additive. */
+.mmi-x-po-td-product,
+.mmi-x-po-td-qty,
+.mmi-x-po-td-cost,
+.mmi-x-po-td-paid,
+.mmi-x-po-td-margin {
+    /* intentionally empty — semantic hooks only, see comment above */
+}
+
+.mmi-x-cost-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* "Locked, trustworthy figure" vs. "live guess, may be wrong" — its own
+   compact chip shape (padding/radius above), not the shared .mmi-badge pill,
+   with its own small hardcoded palette (pre-dates this plugin's badges
+   moving to the shared component — no longer an exact color match to those). */
+.mmi-x-cost-badge--locked { background: #45852C; color: #fff; }
+.mmi-x-cost-badge--live   { background: #fef3c7; color: #92400e; }
+
+.mmi-x-price-history-btn {
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.mmi-x-po-detail-sub {
+    color: #646970;
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.mmi-x-po-detail-product-cell {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.mmi-x-po-detail-thumb {
+    flex-shrink: 0;
+    display: block;
+    width: 40px;
+    height: 40px;
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid #dcdcde;
+}
+
+.mmi-x-po-detail-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.mmi-x-po-detail-brand {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.mmi-x-po-detail-brand-thumb {
+    flex-shrink: 0;
+    display: block;
+    width: 20px;
+    height: 20px;
+    border-radius: 2px;
+    overflow: hidden;
+    border: 1px solid #dcdcde;
+}
+
+.mmi-x-po-detail-brand-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.mmi-x-po-manual-sync {
+    margin-top: 4px;
+    padding-top: 14px;
+    border-top: 1px solid #dcdcde;
+}
+
+/* ── Progress bar (dynamic values via CSS custom property only) ───────── */
+
+.mmi-x-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.mmi-x-progress-bar {
+    flex: 1;
+    height: 10px;
+    background: #e5e7eb;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.mmi-x-progress-fill {
+    height: 100%;
+    width: var(--pct, 0%);
+    background: #2271b1;
+    transition: width .3s ease;
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────────── */
+/* The 3 dialogs that used to live here (Vendor Detail, Order Detail, PO
+   Email panel) are now built on the shared .mmi-modal-backdrop/.mmi-modal
+   family (mmi-suite-common.css) + MMIModal (mmi-modal.js) — same component
+   already used by this plugin's own Price History modal. */
+
+.mmi-hidden {
+    display: none !important;
+}
+
+/* ── Logs tab ──────────────────────────────────────────────────────────────
+   Reuses the shared .mmi-collapsible-section card shell (see above) for the
+   outer frame — this block is just the log-viewer-specific toolbar + pre
+   body. ─────────────────────────────────────────────────────────────────── */
+
+.mmi-x-log-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.mmi-x-log-toolbar .mmi-x-select {
+    min-width: 140px;
+}
+
+.mmi-x-log-toolbar .mmi-x-input {
+    min-width: 220px;
+    flex: 1 1 220px;
+}
+
+.mmi-x-log-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.mmi-x-log-meta {
+    font-size: 12px;
+    color: #646970;
+    margin-bottom: 8px;
+}
+
+.mmi-x-log-content-wrapper {
+    background: #1d2327;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+#mmi-x-log-content {
+    margin: 0;
+    padding: 14px 16px;
+    max-height: 600px;
+    overflow-y: auto;
+    overflow-x: auto;
+    font-family: Consolas, Monaco, 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #c3c4c7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.mmi-x-log-line {
+    padding: 1px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.mmi-x-log-ts {
+    color: #8c8f94;
+}
+
+.mmi-x-log-level {
+    font-weight: 700;
+}
+
+.mmi-x-log-source {
+    color: #72aee6;
+}
+
+.mmi-x-log-line--error {
+    background: rgba(214, 54, 56, 0.12);
+}
+.mmi-x-log-line--error .mmi-x-log-level {
+    color: #ff6b6b;
+}
+
+.mmi-x-log-line--warn {
+    background: rgba(219, 166, 23, 0.1);
+}
+.mmi-x-log-line--warn .mmi-x-log-level {
+    color: #f0c331;
+}
+
+.mmi-x-log-line--info .mmi-x-log-level {
+    color: #7cc576;
+}
+
+.mmi-x-log-line--debug .mmi-x-log-level {
+    color: #8c8f94;
+}
+
+.mmi-x-log-line--other {
+    color: #8c8f94;
+    font-style: italic;
+}
+
+.mmi-x-log-empty {
+    display: block;
+    padding: 20px 0;
+    color: #8c8f94;
+    font-style: italic;
+    white-space: normal;
+}
+
+/* ── Combined fulfillment (Fulfillment Queue) ───────────────────────────────
+   BundleFulfillment in admin-xchange.js — a strip of same-customer groups
+   above the queue table, and the per-item cards in #mmi-x-bundle-panel. */
+
+.mmi-x-bundle-groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--mmi-space-sm);
+    margin: var(--mmi-space-md) 0;
+    padding: var(--mmi-space-md);
+    background: var(--mmi-info-bg);
+    border: 1px solid var(--mmi-info-border);
+    border-radius: var(--mmi-radius-md);
+}
+
+/* Sets display above — without this, the hidden attribute would be ignored
+   (see AGENTS.md "The [hidden] Attribute vs. a Class That Sets display"). */
+.mmi-x-bundle-groups[hidden] {
+    display: none;
+}
+
+.mmi-x-bundle-groups-title {
+    margin: 0;
+    font-weight: 600;
+    color: var(--mmi-info-text);
+}
+
+.mmi-x-bundle-group {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--mmi-space-md);
+    padding: var(--mmi-space-sm) var(--mmi-space-md);
+    background: #fff;
+    border: 1px solid var(--mmi-gray-300);
+    border-radius: var(--mmi-radius-sm);
+}
+
+.mmi-x-bundle-group-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.mmi-x-bundle-group-meta,
+.mmi-x-bundle-item-meta {
+    font-size: 12px;
+    color: var(--mmi-gray-600);
+}
+
+.mmi-x-bundle-group-titles {
+    margin: var(--mmi-space-xs) 0 0;
+    padding-left: var(--mmi-space-lg);
+    list-style: disc;
+}
+
+.mmi-x-bundle-group-titles li {
+    margin: 0;
+}
+
+.mmi-x-bundle-items {
+    display: flex;
+    flex-direction: column;
+    gap: var(--mmi-space-md);
+    margin: var(--mmi-space-lg) 0;
+}
+
+.mmi-x-bundle-item {
+    padding: var(--mmi-space-md);
+    background: var(--mmi-gray-100);
+    border: 1px solid var(--mmi-gray-300);
+    border-radius: var(--mmi-radius-md);
+}
+
+.mmi-x-bundle-item-head {
+    display: flex;
+    align-items: center;
+    gap: var(--mmi-space-md);
+    margin-bottom: var(--mmi-space-sm);
+}
+
+.mmi-x-bundle-item-title {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.mmi-x-bundle-item-logo {
+    width: 56px;
+    height: 56px;
+    object-fit: contain;
+    border-radius: var(--mmi-radius-sm);
+    background: #fff;
+}
+
+.mmi-x-bundle-field-label {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    align-items: center;
+    gap: var(--mmi-space-sm);
+    margin-top: var(--mmi-space-xs);
+    font-weight: 600;
+}
+
+@media (max-width: 782px) {
+    .mmi-x-bundle-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .mmi-x-bundle-field-label {
+        grid-template-columns: 1fr;
+    }
+}
