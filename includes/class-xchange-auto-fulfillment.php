@@ -36,6 +36,14 @@ class MMI_Xchange_Auto_Fulfillment {
     /** 'yes' (default) / 'no' — Settings tab checkbox. */
     const SETTING = 'mmi_xchange_auto_send_fulfillment_email';
 
+    /**
+     * 'yes' (default) / 'no' — skip WooCommerce's own "Completed order"
+     * customer email when the order completes because every item's license
+     * email already went out. The license email is the delivery; a second
+     * "your order is complete" minutes later only adds noise.
+     */
+    const SKIP_COMPLETED_EMAIL = 'mmi_xchange_skip_wc_completed_email';
+
     const RETRY_HOOK  = 'mmi_xchange_auto_fulfill_retry';
     const RETRY_GROUP = 'mmi-xchange-auto-fulfill';
 
@@ -48,6 +56,30 @@ class MMI_Xchange_Auto_Fulfillment {
 
     public static function init(): void {
         add_action( self::RETRY_HOOK, [ __CLASS__, 'run_retry' ], 10, 3 );
+        add_filter( 'woocommerce_email_enabled_customer_completed_order', [ __CLASS__, 'maybe_skip_completed_email' ], 20, 2 );
+    }
+
+    /**
+     * Only for orders made entirely of XChange items that were all emailed
+     * (fulfillment_completion_status()) — a mixed order, or one completed by
+     * hand without the license email, still gets WooCommerce's email.
+     *
+     * @param bool          $enabled
+     * @param WC_Order|null $order
+     */
+    public static function maybe_skip_completed_email( $enabled, $order ) {
+        if ( ! $enabled || ! $order instanceof \WC_Order || MMI_Settings::get( self::SKIP_COMPLETED_EMAIL, 'yes' ) === 'no' ) {
+            return $enabled;
+        }
+        if ( empty( MMI_Xchange_Fulfillment_Queue::fulfillment_completion_status( $order )['fully_fulfilled'] ) ) {
+            return $enabled;
+        }
+        if ( ! $order->get_meta( '_mmi_xchange_completed_email_skipped' ) ) {
+            $order->update_meta_data( '_mmi_xchange_completed_email_skipped', current_time( 'mysql' ) );
+            $order->add_order_note( __( 'WooCommerce\'s "Completed order" email skipped: the license email already went to the customer (XChange Settings).', 'mmi-xchange-integration' ) );
+            $order->save();
+        }
+        return false;
     }
 
     public static function is_enabled(): bool {

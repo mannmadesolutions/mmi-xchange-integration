@@ -42,6 +42,7 @@
         poOrdersSearch: '#mmi-x-po-orders-search',
         poOrdersUnfulfilledOnly: '#mmi-x-po-orders-unfulfilled-only',
         poOrdersRefresh: '#mmi-x-po-orders-refresh',
+        poOrdersLive: '#mmi-x-po-live',
         poQueueStatus: '#mmi-x-po-queue-status',
 
         poLinkerScanBtn: '#mmi-x-po-linker-scan-btn',
@@ -628,6 +629,28 @@
         // already-open row that search/sort/filter can trigger.
         justExpandedOrderId: null,
 
+        // Fulfill's in-row confirm step is open for this order.
+        confirmingOrderId: null,
+        // order_id → { phase: 'buying'|'emailing', sku, po } while this
+        // browser's own Fulfill click is mid-flight.
+        liveRuns: {},
+        // order_id → { html, state }: the last Fulfill result, shown in the
+        // order's progress block instead of a dialog.
+        runNotices: {},
+        // order_id → the live catalog lookup results loadDetail() fetched.
+        previews: {},
+        // order_id → whether its manual-entry <details> is open.
+        manualOpen: {},
+
+        // Live progress check (see schedulePoll()).
+        pollTimer: null,
+        pollInFlight: false,
+        // Orders asked for while a check was in flight — sent next.
+        pollQueue: new Set(),
+        lastPolledAt: null,
+        POLL_LIVE_MS: 10000,
+        POLL_WAITING_MS: 30000,
+
         init() {
             if ($(SELECTORS.poOrdersTable).length === 0) {
                 return;
@@ -641,7 +664,7 @@
             // clean slate on the columns that remain, so a previous manual
             // widening can't alone reproduce the horizontal-scroll problem
             // this redesign was built to eliminate.
-            initColumnResize($(SELECTORS.poOrdersTable), 'mmiXchangePoOrdersColWidthsV2');
+            initColumnResize($(SELECTORS.poOrdersTable), 'mmiXchangePoOrdersColWidthsV3');
 
             $(SELECTORS.poOrdersSearch).on('input', () => this.applyFilters());
             $(SELECTORS.poOrdersUnfulfilledOnly).on('change', () => this.applyFilters());
@@ -654,14 +677,48 @@
             // via the button's own data-order-id, not "whichever row is
             // currently expanded" — correct even in the unlikely event more
             // than one detail panel's markup exists in the DOM at once.
+            // Fulfill (row or detail header) opens the in-row confirm step;
+            // only "Buy & fulfill" there spends money.
             $(document).on('click', '.mmi-x-po-fulfill-btn', function (e) {
                 e.stopPropagation();
-                const orderId = $(this).data('order-id');
-                const order = POOrdersPanel.allOrders.find((o) => o.order_id === orderId);
+                const order = POOrdersPanel.findOrder($(this).data('order-id'));
                 if (order) {
+                    POOrdersPanel.askFulfill(order);
+                }
+            });
+            $(document).on('click', '.mmi-x-po-confirm-go', function (e) {
+                e.stopPropagation();
+                const order = POOrdersPanel.findOrder($(this).data('order-id'));
+                if (order) {
+                    POOrdersPanel.confirmingOrderId = null;
                     PlaceOrderTab.fulfillFromQueue(order, $(this));
                 }
             });
+            $(document).on('click', '.mmi-x-po-confirm-cancel', function (e) {
+                e.stopPropagation();
+                const order = POOrdersPanel.findOrder($(this).data('order-id'));
+                POOrdersPanel.confirmingOrderId = null;
+                if (order) {
+                    POOrdersPanel.refreshOrderInPlace(order);
+                }
+            });
+            // "Needs you": bought, but the license email needs a person —
+            // opens the email window on the bought item's PO.
+            $(document).on('click', '.mmi-x-po-send-btn', function (e) {
+                e.stopPropagation();
+                const order = POOrdersPanel.findOrder($(this).data('order-id'));
+                if (order) {
+                    PlaceOrderTab.reviewAndSend(order);
+                }
+            });
+            // 'toggle' doesn't bubble — listen in the capture phase.
+            document.addEventListener('toggle', (e) => {
+                const $details = $(e.target);
+                if ($details.is('.mmi-x-po-manual')) {
+                    this.manualOpen[$details.data('order-id')] = e.target.open;
+                }
+            }, true);
+            document.addEventListener('visibilitychange', () => this.schedulePoll());
             $(document).on('click', '.mmi-x-po-order-row', function (e) {
                 if ($(e.target).is('a, a *, button, button *')) {
                     return; // let the order-# link / Fulfill button handle their own click
@@ -814,7 +871,25 @@
             this.fetch();
         },
 
+        findOrder(orderId) {
+            return this.allOrders.find((o) => o.order_id === orderId) || null;
+        },
+
+        // Sort keys the table needs that the server row doesn't carry as-is.
+        normalize(o) {
+            const first = o.items[0] || {};
+            o.item = `${first.sku || ''} ${first.product || ''}`;
+            o.total = parseFloat(o.total) || 0;
+            o.next_rank = (o.progress && o.progress.next) ? o.progress.next.rank : 99;
+            return o;
+        },
+
         fetch() {
+            // The Tools tab has no queue table but shares the email window,
+            // whose send reloads this list.
+            if ($(SELECTORS.poOrdersTable).length === 0) {
+                return;
+            }
             $(SELECTORS.poOrdersTbody).html(`<tr><td colspan="${this.COLSPAN}" class="mmi-x-empty mmi-x-empty--loading">${emptyLoadingHtml('Loading…')}</td></tr>`);
 
             ajax('mmi_xchange_fetch_fulfillment_queue', {}).done((res) => {
@@ -822,7 +897,8 @@
                     $(SELECTORS.poOrdersTbody).html(`<tr><td colspan="${this.COLSPAN}" class="mmi-x-empty">${escapeHtml(res.data?.message || 'Could not load orders.')}</td></tr>`);
                     return;
                 }
-                this.allOrders = res.data.orders || [];
+                this.allOrders = (res.data.orders || []).map((o) => this.normalize(o));
+                this.lastPolledAt = new Date();
                 BundleFulfillment.renderGroups(this.allOrders);
 
                 // detailCache holds rendered HTML built from a snapshot of
@@ -842,6 +918,7 @@
                         this.loadDetail(stillOpen);
                     }
                 }
+                this.schedulePoll();
             }).fail((jqXHR) => {
                 // See VendorsTab.fetch()'s matching .fail() comment — this
                 // endpoint verified fine server-side; a real HTTP-layer
@@ -876,24 +953,62 @@
         // item on this order, so the admin can see dealer cost vs. what the
         // customer paid before committing to fulfill via a real purchase.
         loadDetail(order) {
-            this.detailCache[order.order_id] = `<p class="mmi-x-empty mmi-x-empty--loading">${emptyLoadingHtml('Loading live XChange data…')}</p>`;
-            this.applyFilters();
+            delete this.detailCache[order.order_id];
 
             Promise.all(order.items.map((item) =>
                 ajax('mmi_xchange_preview_product', { sku: item.sku, order_id: order.order_id }).then(
                     (res) => ({ item, data: res.success ? res.data : null, message: res.success ? '' : (res.data?.message || 'Not found in XChange catalog.') })
                 ).catch(() => ({ item, data: null, message: 'Network error.' }))
             )).then((results) => {
-                this.detailCache[order.order_id] = this.renderDetailHtml(order, results);
-                this.applyFilters();
+                this.previews[order.order_id] = results;
+                this.detailCache[order.order_id] = this.renderCostHtml(order, results);
+                // Swap just the cost block (and the confirm step, whose price
+                // was waiting on this) — never the whole table.
+                const fresh = this.findOrder(order.order_id) || order;
+                const $body = $(`.mmi-x-po-detail-body[data-order-id="${order.order_id}"]`);
+                if ($body.length) {
+                    $body.find('.mmi-x-po-detail-cost').html(this.detailCache[order.order_id]);
+                    $body.find('.mmi-x-confirm-slot').replaceWith(this.renderConfirmHtml(fresh));
+                } else {
+                    this.applyFilters();
+                }
             });
         },
 
-        // Modeled on WooCommerce's own order-preview modal
-        // (wc-backbone-modal-content): a compact header strip (order #,
-        // status, Reverb origin if applicable) above a real product table,
-        // instead of a stack of loose label/value pairs.
-        renderDetailHtml(order, results) {
+        // Why Fulfill is disabled for a non-"processing" order, shown beside
+        // the disabled button in the detail header. Fulfilling buys the
+        // item from XChange, so an unpaid order (pending/on-hold) must
+        // never be fulfillable from here.
+        fulfillBlockedReason(order) {
+            const paidBy = order.payment_method_title ? ` (${order.payment_method_title})` : '';
+            switch (order.status) {
+                case 'pending':
+                    return `Awaiting payment — the customer's payment${paidBy} was never completed. Fulfill unlocks when the order moves to Processing.`;
+                case 'on-hold':
+                    if (order.stripe_review === 'open') {
+                        return 'Payment held for Stripe review — approve it in Stripe and the order moves to Processing on its own.';
+                    }
+                    if (order.stripe_review === 'check') {
+                        return 'Stripe review closed — check the payment in Stripe, then set the order to Processing.';
+                    }
+                    return `On hold — confirm payment${paidBy} and set the order to Processing to fulfill.`;
+                case 'completed':
+                    return order.fulfilled_po
+                        ? `Completed — already fulfilled on PO #${order.fulfilled_po}.`
+                        : 'Completed — set the order back to Processing to fulfill.';
+                case 'cancelled':
+                case 'refunded':
+                case 'failed':
+                    return `Order is ${order.status} — nothing to fulfill.`;
+                default:
+                    return 'Fulfill is only available for Processing orders.';
+            }
+        },
+
+        // The detail strip's top line: order #, status, marketplace badge and
+        // the one action this order needs (or the reason there isn't one),
+        // pushed right. Re-rendered in place by the live progress check.
+        renderDetailHeaderHtml(order) {
             const statusClass = STATUS_BADGE_CLASS[order.status] || '';
             const sourceBadgeImg = order.source_logo_url
                 ? `<img class="mmi-marketplace-badge" src="${safeUrl(order.source_logo_url)}" alt="${escapeHtml(order.source_label)}" title="${escapeHtml(order.source_label)}">`
@@ -901,23 +1016,187 @@
             const sourceBadge = sourceBadgeImg && order.source_order_url
                 ? `<a href="${safeUrl(order.source_order_url)}" target="_blank" rel="noopener noreferrer" title="View on ${escapeHtml(order.source_label)}">${sourceBadgeImg}</a>`
                 : sourceBadgeImg;
-            // Lives here (not a shared toolbar button) so it appears per
-            // row, scoped to the exact order whose margin is shown directly
-            // below it — no reliance on "whichever row happens to be
-            // expanded" indirection. Only orders with WC status "processing"
-            // can be fulfilled via this action.
-            const fulfillBtn = order.status === 'processing'
-                ? `<button type="button" class="button button-primary button-small mmi-x-po-fulfill-btn" data-order-id="${order.order_id}">${order.fulfilled_po ? 'Re-fulfill' : 'Fulfill'}</button>`
-                : '';
-            const guestConvert = order.is_guest ? this.renderGuestConvertHtml(order) : '';
-            const header = `<div class="mmi-x-po-detail-header">
+            const next = (order.progress && order.progress.next) || {};
+            let action;
+            if (this.liveRuns[order.order_id]) {
+                action = '<span class="mmi-x-po-detail-action-reason">Fulfilling — see the steps below.</span>';
+            } else if (next.action === 'fulfill') {
+                action = `<button type="button" class="button button-primary button-small mmi-x-po-fulfill-btn" data-order-id="${order.order_id}">Fulfill…</button>`;
+            } else if (next.action === 'send') {
+                action = `<button type="button" class="button button-primary button-small mmi-x-po-send-btn" data-order-id="${order.order_id}">✉️ Review &amp; send</button>`;
+            } else {
+                action = `<span class="mmi-x-po-detail-action-reason">${escapeHtml(this.fulfillBlockedReason(order))}</span>
+                    <button type="button" class="button button-small" disabled>Fulfill</button>`;
+            }
+            return `<div class="mmi-x-po-detail-header">
                 <strong>Order #${escapeHtml(order.order_number)}</strong>
                 <span class="mmi-badge ${statusClass}">${escapeHtml(order.status)}</span>
                 ${sourceBadge}
-                ${fulfillBtn}
-            </div>
-            ${guestConvert}`;
+                <div class="mmi-x-po-detail-action">${action}</div>
+            </div>`;
+        },
 
+        // The first XChange item still to buy — Fulfill handles one item per
+        // click, so a second click moves on to the next one.
+        nextFulfillItem(order) {
+            return order.items.find((i) => !i.placed_po && i.fulfillment_status !== 'fulfilled') || null;
+        },
+
+        // Live cost for one SKU from the expanded row's catalog lookup, or
+        // null while it's still loading.
+        liveCost(order, sku) {
+            const hit = (this.previews[order.order_id] || []).find((r) => r.item.sku === sku);
+            if (!hit || !hit.data) {
+                return null;
+            }
+            const cost = hit.data.is_promo_active ? parseFloat(hit.data.promo_price) : parseFloat(hit.data.dealer);
+            return { cost: cost || 0, currency: hit.data.currency || '', promo: !!hit.data.is_promo_active };
+        },
+
+        // In-row confirm step: what one Fulfill click is about to do,
+        // spelled out before any money moves (replaces the old confirm()).
+        renderConfirmHtml(order) {
+            if (this.confirmingOrderId !== order.order_id) {
+                return '<div class="mmi-x-confirm-slot"></div>';
+            }
+            const item = this.nextFulfillItem(order);
+            if (!item) {
+                return `<div class="mmi-x-confirm-slot"><div class="mmi-x-confirm"><p>Every XChange item on this order is already bought.</p>
+                    <button type="button" class="button mmi-x-po-confirm-cancel" data-order-id="${order.order_id}">Close</button></div></div>`;
+            }
+            const qty = item.qty || 1;
+            const price = this.liveCost(order, item.sku);
+            const costText = price
+                ? `${(price.cost * qty).toFixed(2)} ${escapeHtml(price.currency)}${price.promo ? ' (promo price)' : ''}, today's XChange price`
+                : 'loading today\'s XChange price…';
+            const settings = window.mmiXchange || {};
+            let emailStep;
+            if (order.looks_relayed) {
+                emailStep = 'The buyer\'s real email isn\'t known yet, so the email window opens for you to finish.';
+            } else if (!settings.autoSendEmail) {
+                emailStep = `Open the email window so you can review and send it to ${escapeHtml(order.customer_email || 'the customer')} (automatic email is off in Settings).`;
+            } else {
+                emailStep = `Email the license to <strong>${escapeHtml(order.customer_email || '')}</strong> as soon as XChange returns it (re-checked for about 2 hours if it's slow).`;
+            }
+            const completeStep = 'Mark the order Completed once every XChange item is emailed'
+                + (settings.skipCompletedEmail ? ' (WooCommerce\'s own "Completed order" email is skipped).' : ' (the customer also gets WooCommerce\'s "Completed order" email).');
+            const reverbStep = order.reverb_order_number
+                ? `<li>Message the buyer on Reverb and mark Reverb order #${escapeHtml(order.reverb_order_number)} shipped.</li>`
+                : '';
+            const remaining = order.items.filter((i) => !i.placed_po && i.fulfillment_status !== 'fulfilled').length;
+            const multiNote = remaining > 1
+                ? `<p class="description">This order has ${remaining} XChange items still to buy; this buys ${escapeHtml(item.sku)} only. Fulfill again for the next one, or use "Fulfill together" above.</p>`
+                : '';
+            return `<div class="mmi-x-confirm-slot"><div class="mmi-x-confirm" role="group" aria-label="Confirm fulfillment">
+                <p class="mmi-x-confirm-title">Fulfill order #${escapeHtml(order.order_number)}? This will:</p>
+                <ol class="mmi-x-confirm-steps">
+                    <li>Buy <strong>${escapeHtml(item.sku)} × ${qty}</strong> (${escapeHtml(item.product || '')}) from XChange: ${costText}. <strong>This charges your XChange account.</strong></li>
+                    <li>${emailStep}</li>
+                    <li>${completeStep}</li>
+                    ${reverbStep}
+                </ol>
+                ${multiNote}
+                <div class="mmi-x-confirm-actions">
+                    <button type="button" class="button button-primary mmi-x-po-confirm-go" data-order-id="${order.order_id}">Buy &amp; fulfill</button>
+                    <button type="button" class="button mmi-x-po-confirm-cancel" data-order-id="${order.order_id}">Cancel</button>
+                </div>
+            </div></div>`;
+        },
+
+        // Step-by-step progress, from what the server reads back out of each
+        // step's own records (order.progress.steps) — overlaid, only while
+        // this browser's own Fulfill click is mid-flight, with the step it
+        // is on right now (liveRuns).
+        renderProgressHtml(order) {
+            const steps = ((order.progress && order.progress.steps) || []).map((st) => Object.assign({}, st));
+            const run = this.liveRuns[order.order_id];
+            const byKey = (key) => steps.find((st) => st.key === key) || {};
+            if (run) {
+                if (run.phase === 'buying') {
+                    Object.assign(byKey('purchase'), { state: 'active', text: `Buying ${run.sku} from XChange… (XChange allows one request every 12 seconds)`, at: '' });
+                } else {
+                    Object.assign(byKey('purchase'), { state: 'done', text: `PO ${run.po}`, at: '' });
+                    Object.assign(byKey('license'), { state: 'active', text: 'Looking up the license on XChange…', at: '' });
+                    Object.assign(byKey('email'), { state: 'active', text: 'Emailing the customer…', at: '' });
+                }
+            }
+            const live = !!run || !!(order.progress && order.progress.live);
+            const checked = this.lastPolledAt && live
+                ? ` · checked ${this.lastPolledAt.toLocaleTimeString()}`
+                : '';
+            const notice = this.runNotices[order.order_id];
+            const STATE_LABEL = { done: 'Done', active: 'In progress', waiting: 'Waiting', attention: 'Needs you', todo: 'Not yet' };
+            const items = steps.map((st) => {
+                const link = st.link ? ` <a href="${safeUrl(st.link)}" target="_blank" rel="noopener">Open in Stripe →</a>` : '';
+                return `<li class="mmi-x-step mmi-x-step--${escapeHtml(st.state)}">
+                    <span class="mmi-x-step-icon" aria-hidden="true"></span>
+                    <span class="mmi-x-step-label">${escapeHtml(st.label)}<span class="screen-reader-text"> (${STATE_LABEL[st.state] || ''})</span></span>
+                    <span class="mmi-x-step-text">${escapeHtml(st.text)}${link}</span>
+                    <span class="mmi-x-step-at">${escapeHtml(st.at || '')}</span>
+                </li>`;
+            }).join('');
+            return `<div class="mmi-x-flow" data-order-id="${order.order_id}">
+                <div class="mmi-x-flow-head">
+                    <strong>Progress</strong>
+                    ${live ? `<span class="mmi-x-live-dot" aria-hidden="true"></span><span class="mmi-x-flow-live">Live: updates on its own${checked}</span>` : ''}
+                </div>
+                ${notice ? `<div class="mmi-x-status mmi-x-status--${escapeHtml(notice.state)}">${notice.html}</div>` : ''}
+                <ol class="mmi-x-steps">${items}</ol>
+            </div>`;
+        },
+
+        // Customer email history plus "Email again…", which says plainly that
+        // it sends another copy (the email window itself is the confirm step).
+        renderEmailsHtml(order) {
+            const again = order.fulfilled_po
+                ? `<div class="mmi-x-po-email-again">
+                    <button type="button" class="button button-small mmi-x-po-resend-email" data-order-id="${order.order_id}">✉️ Email again…</button>
+                    <span class="description">Opens the email window; sending sends the customer another copy.</span>
+                </div>`
+                : '';
+            return `<div class="mmi-x-po-emails">${this.renderEmailHistoryHtml(order)}${again}</div>`;
+        },
+
+        // XChange-side facts that used to be table columns (Auth #, CCSA).
+        renderFactsHtml(order) {
+            if (!order.fulfilled_po) {
+                return '';
+            }
+            const parts = [`PO ${escapeHtml(order.fulfilled_po)}`];
+            if (order.xchange_auth) {
+                parts.push(`Auth ${escapeHtml(order.xchange_auth)}`);
+            }
+            if (order.xchange_vendor) {
+                parts.push(escapeHtml(order.xchange_vendor));
+            }
+            if (order.xchange_in_ccsa) {
+                parts.push('<span class="mmi-x-po-ccsa-flag" title="Still in XChange\'s temporary Customer Committed Stock Area; refreshed only by a manual Full Sync (Tools tab).">⚠ In CCSA</span>');
+            }
+            return `<p class="mmi-x-po-facts"><strong>XChange:</strong> ${parts.join(' · ')}</p>`;
+        },
+
+        // Everything inside the expanded row, as separate blocks so the live
+        // progress check can replace one without touching the others (or
+        // wiping a PO someone is typing into the manual-entry fields).
+        renderDetailBody(order) {
+            const id = order.order_id;
+            const cost = this.detailCache[id] || `<p class="mmi-x-empty mmi-x-empty--loading">${emptyLoadingHtml('Loading live XChange data…')}</p>`;
+            const guestConvert = order.is_guest ? this.renderGuestConvertHtml(order) : '';
+            return `<div class="mmi-x-po-detail-body" data-order-id="${id}">
+                ${this.renderDetailHeaderHtml(order)}
+                ${this.renderConfirmHtml(order)}
+                ${this.renderProgressHtml(order)}
+                ${guestConvert}
+                <div class="mmi-x-po-detail-cost">${cost}</div>
+                ${this.renderEmailsHtml(order)}
+                ${this.renderFactsHtml(order)}
+                ${this.renderManualSyncHtml(order)}
+            </div>`;
+        },
+
+        // Live per-SKU cost table (Our Cost / Customer Paid / Margin) —
+        // modeled on WooCommerce's own order-preview table.
+        renderCostHtml(order, results) {
             const rows = results.map(({ item, data, message }) => {
                 if (!data) {
                     return `<tr><td colspan="4"><span class="mmi-x-po-detail-product">${escapeHtml(item.sku)}</span> — ${escapeHtml(item.product)}<div class="mmi-x-po-detail-sub">${escapeHtml(message)}</div></td></tr>`;
@@ -1021,11 +1300,13 @@
             const note = '<p class="mmi-x-timestamp">🔒 Cost at purchase = the real XChange price captured when this order was actually fulfilled. ⏱ Live estimate = today\'s XChange price, used only when no purchase-time snapshot exists for this order. Either way, margin is our cost × qty vs. what the customer paid (using the active promo price when one applies) and does not account for XChange fees, taxes, or shipping.</p>';
             const refreshBtn = `<button type="button" class="button button-small mmi-x-po-detail-refresh" data-order-id="${order.order_id}">↺ Refresh</button>`;
 
-            const emailHistory = this.renderEmailHistoryHtml(order);
-            const resendBtn = order.fulfilled_po
-                ? `<button type="button" class="button button-small mmi-x-po-resend-email" data-order-id="${order.order_id}">✉️ Resend Email</button>`
-                : '';
+            return `${table}${note}${refreshBtn}`;
+        },
 
+        // Recording a PO bought by hand on the XChange website — the
+        // exception path, so it's folded away under a <details> whose open
+        // state survives re-renders (manualOpen).
+        renderManualSyncHtml(order) {
             // Manually-placed XChange order, entered against this specific
             // WC order — scoped entirely to this row (data-order-id), never
             // shared with any other part of the tab. This is the only place
@@ -1114,7 +1395,11 @@
                 </div>
             </div>`;
 
-            return `<div class="mmi-x-po-detail-body">${header}${table}${note}${refreshBtn}${emailHistory}${resendBtn}${manualSync}</div>`;
+            const open = this.manualOpen[order.order_id] ? ' open' : '';
+            return `<details class="mmi-x-po-manual" data-order-id="${order.order_id}"${open}>
+                <summary>${existingPo ? 'Linked PO and manual email' : 'Bought it on the XChange website yourself? Record it here'}</summary>
+                ${manualSync}
+            </details>`;
         },
 
         // "Link Only" — writes _mmi_xchange_fulfilled_po directly via
@@ -1394,20 +1679,13 @@
             this.renderRows(this.filteredOrders());
         },
 
-        // 10 data columns total (Order/Date/Status/Customer/Item/Order Total —
-        // WC-sourced — plus PO#/License/Auth#/CCSA — Xchange-sourced). The
-        // former Fulfilled/Action columns were removed in favor of a
-        // per-row color accent (see rowStateClass()) and a Fulfill button
-        // inside each expanded row's own detail header (see
-        // renderDetailHtml()) — both so the table fits 100% width without
-        // horizontal scrolling. Kept in sync with the <thead> in
-        // tab-orders.php's Fulfillment Queue section.
-        COLSPAN: 11,
+        // 8 columns: Order/Date/Customer/Item/Total (WooCommerce), Next step,
+        // PO #/License (Xchange). Auth # and CCSA live in the expanded row's
+        // XChange line (renderFactsHtml()). Kept in sync with the <thead>
+        // in tab-orders.php.
+        COLSPAN: 8,
 
-        // Replaces the removed "Fulfilled" column — a colored left-edge
-        // accent on the row instead of a dedicated column showing the same
-        // fulfilled_po/"Pending" fact a second time (the PO # column
-        // already shows the real PO number once fulfilled).
+        // Left-edge accent: done / ready to fulfill.
         rowStateClass(o) {
             if (o.fulfilled_po) {
                 return 'mmi-x-po-row--fulfilled';
@@ -1418,134 +1696,273 @@
             return '';
         },
 
+        // What this order needs now, with its one action inline.
+        renderNextCell(o) {
+            const next = (o.progress && o.progress.next) || { label: '', tone: 'neutral', action: '' };
+            const running = !!this.liveRuns[o.order_id];
+            const live = running || !!(o.progress && o.progress.live);
+            const label = running ? 'Fulfilling…' : next.label;
+            let action = '';
+            if (!running && next.action === 'fulfill') {
+                action = `<button type="button" class="button button-primary button-small mmi-x-po-fulfill-btn" data-order-id="${o.order_id}">Fulfill…</button>`;
+            } else if (!running && next.action === 'send') {
+                action = `<button type="button" class="button button-small mmi-x-po-send-btn" data-order-id="${o.order_id}">Review &amp; send</button>`;
+            }
+            return `<div class="mmi-x-next mmi-x-next--${escapeHtml(running ? 'info' : next.tone)}">
+                ${live ? '<span class="mmi-x-next-spinner" aria-hidden="true"></span>' : '<span class="mmi-x-next-dot" aria-hidden="true"></span>'}
+                <span class="mmi-x-next-label">${escapeHtml(label)}</span>
+                ${action}
+            </div>`;
+        },
+
+        buildRowEl(o) {
+            const $tr = $('<tr class="mmi-x-po-order-row">').addClass(this.rowStateClass(o)).attr('data-order-id', o.order_id).data('order', o);
+
+            const $orderCell = $('<td data-source="wc">');
+            const $orderInner = $('<div class="mmi-x-po-source-cell">');
+            $orderInner.append($('<a>').attr({ href: o.edit_url, target: '_blank', rel: 'noopener' }).text('#' + o.order_number));
+            if (o.source_logo_url) {
+                const $badgeImg = $('<img class="mmi-marketplace-badge mmi-x-po-order-badge">').attr({ src: o.source_logo_url, alt: o.source_label, title: o.source_label });
+                $orderInner.append(o.source_order_url
+                    ? $('<a>').attr({ href: o.source_order_url, target: '_blank', rel: 'noopener noreferrer', title: `View on ${o.source_label}` }).append($badgeImg)
+                    : $badgeImg);
+            }
+            $orderCell.append($orderInner);
+            $tr.append($orderCell);
+
+            $tr.append($('<td data-source="wc">').text(o.date || ''));
+
+            const $customerCell = $('<td data-source="wc">');
+            const customerLabel = o.customer_name || o.customer_email || '';
+            const $name = $('<div class="mmi-x-po-source-cell">');
+            $name.append(o.customer_edit_url
+                ? $('<a>').attr({ href: o.customer_edit_url, target: '_blank', rel: 'noopener' }).text(customerLabel)
+                : $('<span>').text(customerLabel));
+            const $emailIcon = this.renderEmailStatusIcon(o);
+            if ($emailIcon) {
+                $name.append($emailIcon);
+            }
+            $customerCell.append($name);
+            if (o.customer_email && o.customer_name !== o.customer_email) {
+                $customerCell.append($('<div class="mmi-x-po-detail-sub">').text(o.customer_email));
+            }
+            $tr.append($customerCell);
+
+            const firstItem = o.items[0] || {};
+            let itemText = `${firstItem.sku || ''} — ${firstItem.product || ''} (×${firstItem.qty || 1})`;
+            if (o.items.length > 1) {
+                itemText += ` +${o.items.length - 1} more`;
+            }
+            // Flex on an inner wrapper, not the <td> — a flex <td> stops
+            // stretching to the row's height.
+            const $itemInner = $('<div class="mmi-x-po-item-cell">');
+            if (firstItem.image_url) {
+                $itemInner.append($('<img class="mmi-x-po-item-thumb">').attr({ src: firstItem.image_url, alt: '' }));
+            }
+            $itemInner.append($('<span>').text(itemText));
+            $tr.append($('<td data-source="wc">').append($itemInner));
+
+            $tr.append($('<td data-source="wc">').text(o.total ? o.total.toFixed(2) + ' ' + (o.currency || '') : ''));
+            $tr.append($('<td data-source="next">').html(this.renderNextCell(o)));
+            $tr.append($('<td data-source="xchange">').text(o.fulfilled_po || '—'));
+            $tr.append($('<td data-source="xchange">').text(o.xchange_license || '—'));
+            return $tr;
+        },
+
+        buildDetailRowEl(o) {
+            const $cell = $(`<td colspan="${this.COLSPAN}">`).html(this.renderDetailBody(o));
+            // Soft-reveal once, on the genuine expand — not on every re-render.
+            if (this.justExpandedOrderId === o.order_id) {
+                $cell.find('.mmi-x-po-detail-body').addClass('mmi-animate-fadeIn');
+                this.justExpandedOrderId = null;
+            }
+            return $('<tr class="mmi-x-po-detail-row">').attr('data-order-id', o.order_id).append($cell);
+        },
+
         renderRows(rows) {
             const $tbody = $(SELECTORS.poOrdersTbody);
             if (rows.length === 0) {
                 $tbody.html(`<tr><td colspan="${this.COLSPAN}" class="mmi-x-empty">No matching orders.</td></tr>`);
                 return;
             }
-
             $tbody.empty();
             rows.forEach((o) => {
-                const isExpanded = this.expandedOrderId === o.order_id;
-
-                const $tr = $('<tr class="mmi-x-po-order-row">').addClass(this.rowStateClass(o)).data('order', o);
-                const $orderCell = $('<td data-source="wc">').append($('<a>').attr({ href: o.edit_url, target: '_blank', rel: 'noopener' }).text('#' + o.order_number));
-                $tr.append($orderCell);
-
-                // Marketplace badge + email-confirmation status icon share one
-                // dedicated column, side by side, rather than the badge
-                // living inside the Order cell and the guest-convert panel
-                // expanding the row's full height below it — keeps a row
-                // that needs attention no taller than one that doesn't.
-                const $sourceCell = $('<td data-source="wc">');
-                const $sourceInner = $('<div class="mmi-x-po-source-cell">');
-                if (o.source_logo_url) {
-                    const $badgeImg = $('<img class="mmi-marketplace-badge mmi-x-po-order-badge">').attr({ src: o.source_logo_url, alt: o.source_label, title: o.source_label });
-                    if (o.source_order_url) {
-                        // Excluded from the row's own click-to-expand handler by its
-                        // existing 'a, a *, button, button *' target guard — see the
-                        // delegated .mmi-x-po-order-row click handler below.
-                        $sourceInner.append(
-                            $('<a>').attr({ href: o.source_order_url, target: '_blank', rel: 'noopener noreferrer', title: `View on ${o.source_label}` }).append($badgeImg)
-                        );
-                    } else {
-                        $sourceInner.append($badgeImg);
-                    }
-                }
-                const $emailIcon = this.renderEmailStatusIcon(o);
-                if ($emailIcon) {
-                    $sourceInner.append($emailIcon);
-                }
-                $sourceCell.append($sourceInner);
-                $tr.append($sourceCell);
-
-                $tr.append($('<td data-source="wc">').text(o.date || ''));
-
-                const statusClass = STATUS_BADGE_CLASS[o.status] || '';
-                $tr.append($('<td data-source="wc">').append($('<span>').addClass('mmi-badge ' + statusClass).text(o.status)));
-
-                const $customerCell = $('<td data-source="wc">');
-                const customerLabel = o.customer_name || o.customer_email || '';
-                if (o.customer_edit_url) {
-                    $customerCell.append($('<div>').append(
-                        $('<a>').attr({ href: o.customer_edit_url, target: '_blank', rel: 'noopener' }).text(customerLabel)
-                    ));
-                } else {
-                    $customerCell.append($('<div>').text(customerLabel));
-                }
-                if (o.customer_email && o.customer_name !== o.customer_email) {
-                    $customerCell.append($('<div class="mmi-x-po-detail-sub">').text(o.customer_email));
-                }
-                $tr.append($customerCell);
-
-                const firstItem = o.items[0] || {};
-                let itemText = `${firstItem.sku || ''} — ${firstItem.product || ''} (×${firstItem.qty || 1})`;
-                if (o.items.length > 1) {
-                    itemText += ` +${o.items.length - 1} more`;
-                }
-                // The flex layout lives on an INNER wrapper, not the <td>
-                // itself — a real <td> with display:flex stops stretching
-                // to the row's full height the way a plain table-cell does,
-                // leaving an unstyled gap below short content whenever a
-                // sibling cell (e.g. Customer, with its email + marketplace
-                // icon) makes the row taller. Keeping the <td> a plain cell
-                // is what makes its data-source background actually fill
-                // the whole row.
-                const $itemCell = $('<td data-source="wc">');
-                const $itemInner = $('<div class="mmi-x-po-item-cell">');
-                if (firstItem.image_url) {
-                    $itemInner.append($('<img class="mmi-x-po-item-thumb">').attr({ src: firstItem.image_url, alt: '' }));
-                }
-                $itemInner.append($('<span>').text(itemText));
-                $itemCell.append($itemInner);
-                $tr.append($itemCell);
-
-                $tr.append($('<td data-source="wc">').text(o.total ? parseFloat(o.total).toFixed(2) + ' ' + (o.currency || '') : ''));
-
-                $tr.append($('<td data-source="xchange">').text(o.fulfilled_po || '—'));
-                $tr.append($('<td data-source="xchange">').text(o.xchange_license || '—'));
-                $tr.append($('<td data-source="xchange">').text(o.xchange_auth || '—'));
-
-                // Plain colored text, not a badge chip — a chip's own
-                // background would sit differently than this cell's shared
-                // Xchange-group tint (data-source="xchange"), the one thing
-                // every other cell in this group (PO#/License/Auth#) is
-                // plain text against. See rowStateClass()'s doc comment —
-                // fulfillment state itself is now the row's left accent,
-                // this is just "is it presently sitting in CCSA."
-                const $ccsaCell = $('<td data-source="xchange">');
-                if (o.fulfilled_po && o.xchange_in_ccsa) {
-                    $ccsaCell.append($('<span class="mmi-x-po-ccsa-flag">').text('⚠ In CCSA'));
-                } else {
-                    $ccsaCell.text('—');
-                }
-                $tr.append($ccsaCell);
-
-                $tbody.append($tr);
-
-                if (isExpanded) {
-                    const $detailTr = $('<tr class="mmi-x-po-detail-row">');
-                    const $cell = $(`<td colspan="${this.COLSPAN}">`).html(this.detailCache[o.order_id] || `<p class="mmi-x-empty mmi-x-empty--loading">${emptyLoadingHtml('Loading…')}</p>`);
-                    // Soft-reveal only the pass that actually renders real detail
-                    // content (the loading placeholder above isn't wrapped in
-                    // .mmi-x-po-detail-body, so .find() below no-ops for it and
-                    // the flag survives to the next, real-content render pass).
-                    // Consuming (clearing) the flag only once it's actually used
-                    // — not unconditionally after every render — is what stops a
-                    // search/sort/filter keystroke from replaying the animation
-                    // on an already-open row.
-                    if (this.justExpandedOrderId === o.order_id) {
-                        const $body = $cell.find('.mmi-x-po-detail-body');
-                        if ($body.length) {
-                            $body.addClass('mmi-animate-fadeIn');
-                            this.justExpandedOrderId = null;
-                        }
-                    }
-                    $detailTr.append($cell);
-                    $tbody.append($detailTr);
+                $tbody.append(this.buildRowEl(o));
+                if (this.expandedOrderId === o.order_id) {
+                    $tbody.append(this.buildDetailRowEl(o));
                 }
             });
+        },
+
+        // Swaps one order's row, and the live parts of its open detail, for
+        // fresh ones — leaving the cost table and the manual-entry fields
+        // (and anything typed there) alone.
+        refreshOrderInPlace(o) {
+            const $tbody = $(SELECTORS.poOrdersTbody);
+            const $row = $tbody.find(`tr.mmi-x-po-order-row[data-order-id="${o.order_id}"]`);
+            if (!$row.length) {
+                return;
+            }
+            $row.replaceWith(this.buildRowEl(o));
+            const $body = $tbody.find(`.mmi-x-po-detail-body[data-order-id="${o.order_id}"]`);
+            if ($body.length) {
+                $body.find('.mmi-x-po-detail-header').replaceWith(this.renderDetailHeaderHtml(o));
+                $body.find('.mmi-x-confirm-slot').replaceWith(this.renderConfirmHtml(o));
+                $body.find('.mmi-x-flow').replaceWith(this.renderProgressHtml(o));
+                $body.find('.mmi-x-po-emails').replaceWith(this.renderEmailsHtml(o));
+                $body.find('.mmi-x-po-facts').remove();
+                $body.find('.mmi-x-po-emails').after(this.renderFactsHtml(o));
+            }
+        },
+
+        // Fulfill → in-row confirm step, opening the row (and its live price
+        // lookup) if it isn't already.
+        askFulfill(order) {
+            this.confirmingOrderId = order.order_id;
+            delete this.runNotices[order.order_id];
+            if (this.expandedOrderId !== order.order_id) {
+                this.expand(order);
+            } else {
+                this.refreshOrderInPlace(order);
+            }
+            this.scrollIntoQueue($(`.mmi-x-po-detail-body[data-order-id="${order.order_id}"] .mmi-x-confirm`));
+        },
+
+        // Scrolls the queue's own scroll box so $el sits just below the
+        // sticky header (scrollIntoView() would tuck it underneath).
+        scrollIntoQueue($el) {
+            const $box = $(SELECTORS.poOrdersTable).closest('.mmi-x-table-scroll');
+            if (!$el.length || !$box.length) {
+                return;
+            }
+            const box = $box[0];
+            const headH = $(SELECTORS.poOrdersTable).find('thead').outerHeight() || 0;
+            const offset = $el[0].getBoundingClientRect().top - box.getBoundingClientRect().top - headH - 8;
+            box.scrollTo({ top: box.scrollTop + offset, behavior: 'smooth' });
+        },
+
+        // ── A Fulfill click's own steps (PlaceOrderTab.fulfillFromQueue) ──
+        startRun(order, run) {
+            this.liveRuns[order.order_id] = run;
+            delete this.runNotices[order.order_id];
+            if (this.expandedOrderId !== order.order_id) {
+                this.expand(order);
+            }
+            this.refreshOrderInPlace(order);
+            this.renderLiveIndicator();
+        },
+
+        // A row's running state without opening it (Fulfill together marks
+        // each of its orders this way).
+        markRun(orderId, run) {
+            this.liveRuns[orderId] = run;
+            const order = this.findOrder(orderId);
+            if (order) {
+                this.refreshOrderInPlace(order);
+            }
+            this.renderLiveIndicator();
+        },
+
+        updateRun(orderId, changes) {
+            if (!this.liveRuns[orderId]) {
+                return;
+            }
+            Object.assign(this.liveRuns[orderId], changes);
+            const order = this.findOrder(orderId);
+            if (order) {
+                this.refreshOrderInPlace(order);
+            }
+        },
+
+        // The click's synchronous part is over: show its result in the
+        // order's progress block, then read the real state back from the
+        // server (which keeps polling on its own while anything automated
+        // is still running).
+        endRun(orderId, html, state) {
+            delete this.liveRuns[orderId];
+            this.runNotices[orderId] = { html, state };
+            const order = this.findOrder(orderId);
+            if (order) {
+                this.refreshOrderInPlace(order);
+            }
+            this.poll([orderId]);
+        },
+
+        // ── Live progress check ──────────────────────────────────────────
+        // While an automated step is running on any listed order (a license
+        // retry, the Reverb close-out), one request every 10 s fetches fresh
+        // rows for just those orders; an open order waiting on payment or a
+        // Stripe review is checked every 30 s. Paused while the tab is
+        // hidden. One request in flight at most.
+        pollTargets() {
+            const fast = this.allOrders.filter((o) => o.progress && o.progress.live).map((o) => o.order_id);
+            const slow = [];
+            const open = this.findOrder(this.expandedOrderId);
+            const WAITING = ['awaiting_payment', 'stripe_review', 'stripe_check', 'on_hold'];
+            if (open && open.progress && WAITING.includes(open.progress.next.key) && !fast.includes(open.order_id)) {
+                slow.push(open.order_id);
+            }
+            return { ids: fast.concat(slow).slice(0, 25), fast: fast.length > 0 };
+        },
+
+        schedulePoll() {
+            clearTimeout(this.pollTimer);
+            this.pollTimer = null;
+            this.renderLiveIndicator();
+            const targets = this.pollTargets();
+            if (targets.ids.length === 0 || document.hidden) {
+                return;
+            }
+            this.pollTimer = setTimeout(() => this.poll(targets.ids), targets.fast ? this.POLL_LIVE_MS : this.POLL_WAITING_MS);
+        },
+
+        poll(ids) {
+            if (!ids.length) {
+                return;
+            }
+            if (this.pollInFlight) {
+                ids.forEach((id) => this.pollQueue.add(id));
+                return;
+            }
+            clearTimeout(this.pollTimer);
+            this.pollInFlight = true;
+            ajax('mmi_xchange_fulfillment_progress', { order_ids: ids.join(',') }).done((res) => {
+                if (!res.success) {
+                    return;
+                }
+                (res.data.orders || []).forEach((row) => {
+                    const fresh = this.normalize(row);
+                    const at = this.allOrders.findIndex((o) => o.order_id === fresh.order_id);
+                    if (at >= 0) {
+                        this.allOrders[at] = fresh;
+                    }
+                    this.refreshOrderInPlace(fresh);
+                });
+                BundleFulfillment.renderGroups(this.allOrders);
+            }).always(() => {
+                this.pollInFlight = false;
+                this.lastPolledAt = new Date();
+                if (this.pollQueue.size) {
+                    const queued = [...this.pollQueue];
+                    this.pollQueue.clear();
+                    this.poll(queued);
+                    return;
+                }
+                this.schedulePoll();
+            });
+        },
+
+        renderLiveIndicator() {
+            const running = Object.keys(this.liveRuns).length;
+            const live = this.allOrders.filter((o) => o.progress && o.progress.live).length;
+            const $live = $(SELECTORS.poOrdersLive);
+            if (!running && !live) {
+                $live.prop('hidden', true).empty();
+                return;
+            }
+            const count = running + live;
+            const checked = this.lastPolledAt ? ` · checked ${this.lastPolledAt.toLocaleTimeString()}` : '';
+            $live.prop('hidden', false).html(`<span class="mmi-x-live-dot" aria-hidden="true"></span>${count} order${count === 1 ? '' : 's'} in progress, updating live${escapeHtml(checked)}`);
         },
     };
 
@@ -1597,35 +2014,28 @@
         // admin still has the manual-sync option in this same row's expanded
         // detail panel (see POOrdersPanel.renderDetailHtml()).
         fulfillFromQueue(order, $rowBtn) {
-            const item = order.items[0] || {};
-            const sku = item.sku || '';
+            const item = POOrdersPanel.nextFulfillItem(order);
+            if (!item) {
+                POOrdersPanel.endRun(order.order_id, 'Every XChange item on this order is already bought.', 'error');
+                return;
+            }
+            const sku = item.sku;
             const qty = item.qty || 1;
-
-            if (!sku) {
-                window.alert('No XChange SKU found on this order.');
-                return;
-            }
-
-            const multiItemNote = order.items.length > 1
-                ? `\n\nNote: this order has ${order.items.length} XChange items — this will only fulfill ${sku}. Click "Fulfill" again afterward for the others.`
-                : '';
-            if (!confirm(`Place a B2B purchase order for ${sku} (qty ${qty}) to fulfill order #${order.order_number}?${multiItemNote}\n\nThis will charge your XChange account.`)) {
-                return;
-            }
+            const id = order.order_id;
 
             this.pendingOrder = order;
-
             if ($rowBtn) {
                 $rowBtn.prop('disabled', true).addClass('mmi-is-loading');
             }
-            this.setQueueStatus(`Placing order for #${order.order_number}…`, 'busy');
+            POOrdersPanel.startRun(order, { phase: 'buying', sku });
+            this.setQueueStatus(`Placing order for #${escapeHtml(order.order_number)}…`, 'busy');
 
-            this.placeOrder(sku, qty, order.order_id).done((res) => {
+            this.placeOrder(sku, qty, id).done((res) => {
                 // Already purchased earlier (e.g. the email step was closed
                 // without sending) — the server refused a second purchase
                 // and handed back the existing PO; continue to the email.
                 if (!res.success && res.data?.blocked_reason === 'already_placed') {
-                    this.setQueueStatus(escapeHtml(res.data.message), 'success');
+                    POOrdersPanel.updateRun(id, { phase: 'emailing', po: res.data.po_number });
                     this.autoFulfill(order, sku, res.data.po_number, '');
                     return;
                 }
@@ -1634,29 +2044,27 @@
                     if (res.data?.manual_url) {
                         msg += ` <a href="${safeUrl(res.data.manual_url)}" target="_blank" rel="noopener">Open XChange →</a>`;
                     }
-                    msg += ' Expand this order\'s row to sync it manually instead.';
-                    // 'external_source' is a hard safety stop, not an ordinary
-                    // failure (out of stock, network error) — the whole point
-                    // is preventing a duplicate real-money XChange purchase
-                    // for an order already sold on Reverb/another marketplace,
-                    // so this gets a blocking alert() in addition to the
-                    // persistent red banner. No XChange API call was made.
+                    // 'external_source' is a hard safety stop (an order
+                    // already sold on Reverb/another marketplace), not an
+                    // ordinary failure — its own red "blocked" state.
                     if (res.data?.blocked_reason === 'external_source') {
+                        msg = `<strong>Fulfillment blocked — nothing was bought or charged.</strong> ${msg}`;
+                        POOrdersPanel.endRun(id, msg, 'blocked');
                         this.setQueueStatus(msg, 'blocked');
-                        window.alert(
-                            `Fulfillment blocked for order #${order.order_number}:\n\n` +
-                            `${res.data.message}\n\n` +
-                            'No XChange order was placed — nothing was charged.'
-                        );
                     } else {
+                        msg += ' To record a PO you bought on the XChange website instead, use "Bought it on the XChange website yourself?" below.';
+                        POOrdersPanel.endRun(id, msg, 'error');
                         this.setQueueStatus(msg, 'error');
                     }
                     return;
                 }
                 this.setQueueStatus(`Order placed for #${escapeHtml(order.order_number)}. PO: <strong>${escapeHtml(res.data.po_number)}</strong>${res.data.auth ? ' / Auth: <strong>' + escapeHtml(res.data.auth) + '</strong>' : ''}`, 'success');
+                POOrdersPanel.updateRun(id, { phase: 'emailing', po: res.data.po_number });
                 this.autoFulfill(order, sku, res.data.po_number, res.data.auth);
             }).fail(() => {
-                this.setQueueStatus(`Network error placing order for #${order.order_number} — check whether it actually went through on XChange before retrying.`, 'error');
+                const msg = `Network error placing the order for #${escapeHtml(order.order_number)}. Check whether it went through on XChange before trying again.`;
+                POOrdersPanel.endRun(id, msg, 'error');
+                this.setQueueStatus(msg, 'error');
             }).always(() => {
                 if ($rowBtn) {
                     $rowBtn.prop('disabled', false).removeClass('mmi-is-loading');
@@ -1667,37 +2075,48 @@
         // The step after "Fulfill" placed (or reused) a PO: the server emails
         // the customer and completes the order when everything is known
         // (MMI_Xchange_Auto_Fulfillment). 'pending' = license not posted
-        // yet, sent later by a background retry. 'review' (or a failure)
-        // opens the Email Customer modal as before. pendingOrder is still
-        // set from fulfillFromQueue() for revealEmailPanel() to consume.
+        // yet, sent later by a background retry (the row keeps updating
+        // live). 'review' (or a failure) opens the Email Customer window.
         autoFulfill(order, sku, poNumber, auth) {
+            const id = order.order_id;
             const openModal = (html) => {
-                if (html) {
-                    this.setQueueStatus(html, 'busy');
-                }
+                POOrdersPanel.endRun(id, `${html} The email window is open for you to review and send.`, 'busy');
+                this.setQueueStatus(html, 'busy');
                 this.pendingOrder = order;
                 this.revealEmailPanel(sku, poNumber, auth);
             };
 
             this.setQueueStatus(`PO <strong>${escapeHtml(poNumber)}</strong> placed for #${escapeHtml(order.order_number)} — emailing the customer…`, 'busy');
-            ajax('mmi_xchange_auto_fulfill', { order_id: order.order_id, sku }).done((res) => {
+            ajax('mmi_xchange_auto_fulfill', { order_id: id, sku }).done((res) => {
                 const data = res.data || {};
                 if (res.success && data.status === 'sent') {
                     this.pendingOrder = null;
+                    POOrdersPanel.endRun(id, escapeHtml(data.message), 'success');
                     this.setQueueStatus(escapeHtml(data.message), 'success');
-                    POOrdersPanel.fetch();
                     return;
                 }
                 if (res.success && data.status === 'pending') {
                     this.pendingOrder = null;
+                    POOrdersPanel.endRun(id, escapeHtml(data.message), 'busy');
                     this.setQueueStatus(escapeHtml(data.message), 'busy');
-                    POOrdersPanel.fetch();
                     return;
                 }
-                openModal(data.message ? `${escapeHtml(data.message)} Review and send below.` : '');
+                openModal(data.message ? escapeHtml(data.message) : `PO <strong>${escapeHtml(poNumber)}</strong> placed.`);
             }).fail(() => {
-                openModal(`PO <strong>${escapeHtml(poNumber)}</strong> placed — couldn't send the email automatically (network error). Review and send below.`);
+                openModal(`PO <strong>${escapeHtml(poNumber)}</strong> placed, but the automatic email couldn't run (network error).`);
             });
+        },
+
+        // "Review & send" on an order that's bought but not emailed: the
+        // email window, pre-filled with the bought item's PO.
+        reviewAndSend(order) {
+            const item = order.items.find((i) => i.placed_po && i.fulfillment_status !== 'fulfilled');
+            if (!item) {
+                this.resendEmail(order);
+                return;
+            }
+            this.pendingOrder = order;
+            this.revealEmailPanel(item.sku, item.placed_po, order.xchange_auth || '');
         },
 
         // Opens the Email Customer modal, pre-filled with a PO/Auth the
@@ -1976,8 +2395,14 @@
             if (fromOrder) {
                 $(SELECTORS.poEmailTo).val(fromOrder.customer_email || '');
                 $(SELECTORS.poEmailName).val(fromOrder.customer_name || '');
-                $(SELECTORS.poEmailContext).removeClass('mmi-hidden')
-                    .text(`Fulfilling order #${fromOrder.order_number} for ${fromOrder.customer_name || fromOrder.customer_email}`);
+                // A second send is a second copy in the customer's inbox —
+                // say so before they click Send.
+                const sentBefore = (fromOrder.email_history || []).filter((h) => h.success);
+                const lastSent = sentBefore[sentBefore.length - 1];
+                $(SELECTORS.poEmailContext).removeClass('mmi-hidden warning').addClass(lastSent ? 'warning' : 'success')
+                    .text(lastSent
+                        ? `Order #${fromOrder.order_number} was already emailed to ${lastSent.to} (${lastSent.sent_at}). Sending again sends another copy.`
+                        : `Fulfilling order #${fromOrder.order_number} for ${fromOrder.customer_name || fromOrder.customer_email}`);
                 // States explicitly what THIS send will do to the order —
                 // exactly the ambiguity that prompted splitting Link/Email
                 // apart in the first place; leaving it unstated here would
@@ -2321,13 +2746,27 @@
     const BundleFulfillment = {
         groups: {},
         items: [],
+        // Group key whose in-card confirm step is open / that is running.
+        confirmingKey: null,
+        runningKey: null,
 
         init() {
             if ($(SELECTORS.bundleGroups).length === 0) {
                 return;
             }
+            // "Fulfill together" opens an in-card confirm step; only its
+            // "Buy & fulfill" spends money.
             $(document).on('click', '.mmi-x-bundle-start', (e) => {
+                this.confirmingKey = $(e.currentTarget).data('group');
+                this.renderGroups(POOrdersPanel.allOrders);
+            });
+            $(document).on('click', '.mmi-x-bundle-cancel', () => {
+                this.confirmingKey = null;
+                this.renderGroups(POOrdersPanel.allOrders);
+            });
+            $(document).on('click', '.mmi-x-bundle-go', (e) => {
                 const group = this.groups[$(e.currentTarget).data('group')];
+                this.confirmingKey = null;
                 if (group) {
                     this.start(group, $(e.currentTarget));
                 }
@@ -2384,7 +2823,7 @@
                         + `<ul class="mmi-x-bundle-group-titles">${titles}</ul>`
                         + this.renderEmailRequest(group)
                         + `</div>`
-                        + `<button type="button" class="button button-primary mmi-x-bundle-start" data-group="${escapeHtml(group.key)}">📦 Fulfill together (${group.items.length})</button>`
+                        + this.renderGroupAction(group)
                         + `</div>`;
                 });
 
@@ -2395,6 +2834,38 @@
             }
             $wrap.html(`<p class="mmi-x-bundle-groups-title">Same customer, multiple software items — fulfill them in one email:</p>${rows.join('')}`)
                 .prop('hidden', false);
+        },
+
+        // The card's action: the button, its confirm step, or "running".
+        renderGroupAction(group) {
+            const key = escapeHtml(group.key);
+            if (this.runningKey === group.key) {
+                return '<span class="mmi-x-bundle-running"><span class="mmi-x-next-spinner" aria-hidden="true"></span>Fulfilling: each order\'s row below shows its progress</span>';
+            }
+            if (this.confirmingKey !== group.key) {
+                return `<button type="button" class="button button-primary mmi-x-bundle-start" data-group="${key}">📦 Fulfill together (${group.items.length})</button>`;
+            }
+            const toBuy = group.items.filter(({ item }) => !item.placed_po).length;
+            const latest = group.orders[0];
+            const charge = toBuy > 0
+                ? `Buy <strong>${toBuy}</strong> item${toBuy === 1 ? '' : 's'} from XChange, one after another. <strong>This charges your XChange account.</strong>`
+                : 'Every item is already bought, so nothing new is charged.';
+            const settings = window.mmiXchange || {};
+            const relayed = group.orders.some((o) => o.looks_relayed);
+            const emailStep = relayed
+                ? 'The buyer\'s real email isn\'t known yet, so the combined email window opens for you to finish.'
+                : `Send <strong>${escapeHtml(latest.customer_email || latest.customer_name || 'the customer')}</strong> one email with every license${settings.autoSendEmail ? '' : ' (the email window opens so you can review it first)'}.`;
+            return `<div class="mmi-x-confirm mmi-x-confirm--bundle" role="group" aria-label="Confirm combined fulfillment">
+                <ol class="mmi-x-confirm-steps">
+                    <li>${charge}</li>
+                    <li>${emailStep}</li>
+                    <li>Complete each order once all its items are emailed.</li>
+                </ol>
+                <div class="mmi-x-confirm-actions">
+                    <button type="button" class="button button-primary mmi-x-bundle-go" data-group="${key}">Buy &amp; fulfill ${group.items.length}</button>
+                    <button type="button" class="button mmi-x-bundle-cancel">Cancel</button>
+                </div>
+            </div>`;
         },
 
         // The group's real-email request, as ONE request: the buyer is asked
@@ -2428,25 +2899,17 @@
         },
 
         start(group, $btn) {
-            const toBuy = group.items.filter(({ item }) => !item.placed_po);
-            const lines = group.items.map(({ order, item }) => {
-                const already = item.placed_po ? ` — already purchased, PO ${item.placed_po}` : '';
-                return `• ${item.sku} × ${item.qty} — ${item.product} (order #${order.order_number})${already}`;
-            }).join('\n');
-            const charge = toBuy.length > 0
-                ? `\n\nThis will place ${toBuy.length} XChange purchase order(s) and charge your XChange account.`
-                : '\n\nEvery item is already purchased — no new XChange charge.';
-            if (!window.confirm(`Fulfill ${group.items.length} items for ${group.orders[0].customer_name} in one email?\n\n${lines}${charge}`)) {
-                return;
-            }
-
             $btn.prop('disabled', true).addClass('mmi-is-loading');
+            this.runningKey = group.key;
+            this.renderGroups(POOrdersPanel.allOrders);
             const placed = [];
             const queue = group.items.slice();
+            const orderIds = [...new Set(group.items.map(({ order }) => order.order_id))];
             const stopWith = (html, state) => {
                 PlaceOrderTab.setQueueStatus(html, state);
-                $btn.prop('disabled', false).removeClass('mmi-is-loading');
-                POOrdersPanel.fetch();
+                this.runningKey = null;
+                orderIds.forEach((id) => POOrdersPanel.endRun(id, html, state));
+                this.renderGroups(POOrdersPanel.allOrders);
             };
 
             // Sequential on purpose: XChange allows ~1 request per 12s
@@ -2455,22 +2918,24 @@
             const next = () => {
                 const entry = queue.shift();
                 if (!entry) {
-                    $btn.prop('disabled', false).removeClass('mmi-is-loading');
-                    this.open(group, placed);
+                    this.open(group, placed, orderIds);
                     return;
                 }
                 const { order, item } = entry;
                 if (item.placed_po) {
                     placed.push({ order_id: order.order_id, sku: item.sku });
+                    POOrdersPanel.markRun(order.order_id, { phase: 'emailing', sku: item.sku, po: item.placed_po });
                     next();
                     return;
                 }
+                POOrdersPanel.markRun(order.order_id, { phase: 'buying', sku: item.sku });
                 PlaceOrderTab.setQueueStatus(`Purchasing ${escapeHtml(item.sku)} for order #${escapeHtml(order.order_number)} (${placed.length + 1} of ${group.items.length})…`, 'busy');
                 PlaceOrderTab.placeOrder(item.sku, item.qty || 1, order.order_id).done((res) => {
                     // already_placed: the server refused a second purchase —
                     // the recorded PO is reused, which is exactly what we want.
                     if (res.success || res.data?.blocked_reason === 'already_placed') {
                         placed.push({ order_id: order.order_id, sku: item.sku });
+                        POOrdersPanel.markRun(order.order_id, { phase: 'emailing', sku: item.sku, po: res.data?.po_number || '' });
                         next();
                         return;
                     }
@@ -2486,7 +2951,12 @@
         // Every item is placed: try the combined email server-side first
         // (MMI_Xchange_Auto_Fulfillment::attempt_bundle()); anything it
         // can't vouch for opens the combined modal.
-        open(group, placed) {
+        open(group, placed, orderIds = []) {
+            const finish = (html, state) => {
+                this.runningKey = null;
+                orderIds.forEach((id) => POOrdersPanel.endRun(id, html, state));
+                this.renderGroups(POOrdersPanel.allOrders);
+            };
             PlaceOrderTab.setQueueStatus(`All ${placed.length} items purchased — emailing the customer…`, 'busy');
             ajax('mmi_xchange_auto_fulfill_bundle', { items: JSON.stringify(placed) }).done((res) => {
                 const data = res.data || {};
@@ -2495,11 +2965,15 @@
                         .map(([id, status]) => `#${escapeHtml(id)} ${escapeHtml(status || 'unknown')}`)
                         .join(', ');
                     PlaceOrderTab.setQueueStatus(`${escapeHtml(data.message)} Orders: ${statuses}.`, 'success');
-                    POOrdersPanel.fetch();
+                    finish(`${escapeHtml(data.message)} (combined email)`, 'success');
                     return;
                 }
+                finish(`All ${placed.length} items bought. ${escapeHtml(data.message || '')} The combined email window is open for you to review and send.`, 'busy');
                 this.openModal(group, placed, data.message || '');
-            }).fail(() => this.openModal(group, placed, ''));
+            }).fail(() => {
+                finish(`All ${placed.length} items bought; the automatic email couldn't run (network error). The combined email window is open.`, 'busy');
+                this.openModal(group, placed, '');
+            });
         },
 
         openModal(group, placed, reason) {
@@ -3425,7 +3899,7 @@
             $(SELECTORS.vendorDetailBody).html(`
                 <h3>${vendorName}</h3>
                 ${summary}
-                <div class="mmi-x-table-scroll mmi-x-table-scroll--preview">
+                <div class="mmi-x-table-scroll mmi-x-table-scroll--full">
                     <table class="mmi-x-table" id="mmi-x-preview-table">
                         <thead><tr>${thead}</tr></thead>
                         <tbody id="mmi-x-preview-tbody"></tbody>

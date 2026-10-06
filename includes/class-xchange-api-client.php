@@ -519,7 +519,7 @@ class MMI_Xchange_API_Client {
      * call was a full pull against Xchange's own explicit "call it once and
      * cache the results... these are not expected to be updated frequently"
      * guidance. Callers that maintain their own cache (see
-     * MMI_Xchange_Vendors::write_web_assets_json()) should pass their last
+     * MMI_Xchange_Vendors::run_web_assets_batch()) should pass their last
      * successful fetch time; one-shot/preview callers (CSV export, the
      * media-import job, the Vendors-tab preview) correctly leave this null
      * for a full pull, since they have no cache to top up.

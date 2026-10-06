@@ -180,11 +180,17 @@
     max-height: 640px;
 }
 
-/* Vendor detail's "preview matched products" table — rendered inline inside
-   an already-open detail panel, so it's capped relative to viewport height
-   rather than a fixed pixel value like the two variants above. */
-.mmi-x-table-scroll--preview {
-    max-height: 50vh;
+/* The Fulfillment Queue is the whole Orders tab, and an open order's steps,
+   margin and emails need room — most of the window, not a fixed 640px. */
+.mmi-x-table-scroll--queue {
+    max-height: max(480px, calc(100vh - 240px));
+}
+
+/* Vendor tables (the Vendors directory and a vendor's "preview matched
+   products" table) grow to the full list — no inner vertical scroll. The
+   box still scrolls sideways when the columns are wider than the page. */
+.mmi-x-table-scroll--full {
+    max-height: none;
 }
 
 /* table-layout:fixed sources its column widths from an explicit <colgroup>
@@ -284,17 +290,14 @@
    the browser stretches these proportionally to fill any leftover space,
    so keeping the declared sum comfortably narrow is what keeps the table
    from ever needing horizontal scroll on a normal-width screen. */
-.mmi-x-col-order     { width: 90px; }
-.mmi-x-col-source    { width: 60px; }
-.mmi-x-col-date      { width: 100px; }
-.mmi-x-col-status    { width: 90px; }
-.mmi-x-col-customer  { width: 170px; }
-.mmi-x-col-item      { width: 210px; }
-.mmi-x-col-total     { width: 100px; }
-.mmi-x-col-xpo       { width: 90px; }
-.mmi-x-col-xlicense  { width: 120px; }
-.mmi-x-col-xauth     { width: 90px; }
-.mmi-x-col-xccsa     { width: 80px; }
+.mmi-x-col-order     { width: 100px; }
+.mmi-x-col-date      { width: 120px; }
+.mmi-x-col-customer  { width: 190px; }
+.mmi-x-col-item      { width: 240px; }
+.mmi-x-col-total     { width: 90px; }
+.mmi-x-col-next      { width: 230px; }
+.mmi-x-col-xpo       { width: 120px; }
+.mmi-x-col-xlicense  { width: 130px; }
 
 /* #mmi-x-orders-table — no <colgroup>, widths set directly on each <th>. */
 .mmi-x-th-po      { width: 110px; }
@@ -638,6 +641,7 @@
 
 .mmi-x-po-detail-body {
     padding: 16px 20px;
+    white-space: normal;
 }
 
 .mmi-x-po-detail-header {
@@ -650,12 +654,30 @@
     font-size: 14px;
 }
 
-/* Fulfill button — lives in this specific order's own detail header (see
-   renderDetailHtml()) rather than a shared toolbar button, so it appears
-   per row. Pushed to the far right via margin-left:auto so it reads as
-   this row's distinct action, not just another badge alongside status. */
-.mmi-x-po-detail-header .mmi-x-po-fulfill-btn {
+/* Fulfill action slot — lives in this specific order's own detail header
+   (see renderDetailHtml()) rather than a shared toolbar button, so it
+   appears per row. Pushed to the far right via margin-left:auto so it reads
+   as this row's distinct action, not just another badge alongside status.
+   Always rendered: a non-fulfillable order gets a disabled button with its
+   reason to the left, so the button is never simply missing. */
+.mmi-x-po-detail-action {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.mmi-x-po-detail-action-reason {
+    font-size: 12px;
+    color: var(--mmi-text-secondary, #646970);
+    text-align: right;
+    white-space: normal;
+    max-width: 460px;
+}
+
+.mmi-x-po-detail-action .button {
+    flex-shrink: 0;
 }
 
 /* ── WC vs Xchange column grouping (merged Orders tab's Fulfillment Queue
@@ -681,6 +703,9 @@
 }
 .mmi-x-table thead th[data-source="xchange"], td[data-source="xchange"] {
     background: #fdf8f0;
+}
+.mmi-x-table thead th[data-source="next"], td[data-source="next"] {
+    background: #fff;
 }
 
 /* ── Guest → customer convert widget (Orders tab detail view) — reuses
@@ -1140,5 +1165,255 @@
 
     .mmi-x-bundle-field-label {
         grid-template-columns: 1fr;
+    }
+}
+
+
+/* ── Fulfillment Queue: Next step, confirm step, live progress ─────────────
+   (POOrdersPanel in admin-xchange.js; steps come from
+   MMI_Xchange_Fulfillment_Progress). States: done / active / waiting /
+   attention / todo. ─────────────────────────────────────────────────────── */
+
+/* Next step cell — a dot or spinner, the label, and the one action. */
+.mmi-x-next {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font-weight: 600;
+}
+.mmi-x-next-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.mmi-x-next .button {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.mmi-x-next-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--mmi-text-secondary, #646970);
+}
+.mmi-x-next-spinner {
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--mmi-info-bg, #e3f2fd);
+    border-top-color: var(--mmi-info, #2196f3);
+    border-radius: 50%;
+    animation: mmiSpin 0.8s linear infinite;
+}
+.mmi-x-next--success { color: var(--mmi-success-text, #155724); }
+.mmi-x-next--success .mmi-x-next-dot { background: var(--mmi-success, #45852C); }
+.mmi-x-next--warning { color: var(--mmi-warning-text, #856404); }
+.mmi-x-next--warning .mmi-x-next-dot { background: var(--mmi-warning, #dba617); }
+.mmi-x-next--error { color: var(--mmi-error-text, #721c24); }
+.mmi-x-next--error .mmi-x-next-dot { background: var(--mmi-error, #d63638); }
+.mmi-x-next--info { color: var(--mmi-info-text, #1565c0); }
+.mmi-x-next--neutral { color: var(--mmi-text-secondary, #646970); font-weight: 400; }
+
+/* "N orders in progress, updating live" in the queue toolbar. */
+.mmi-x-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--mmi-info-text, #1565c0);
+}
+.mmi-x-live[hidden] {
+    display: none;
+}
+.mmi-x-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--mmi-info, #2196f3);
+    animation: mmiXLivePulse 1.6s ease-in-out infinite;
+}
+@keyframes mmiXLivePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* In-row confirm step (Fulfill… → "Buy & fulfill"). */
+.mmi-x-confirm {
+    margin: 0 0 14px;
+    padding: 12px 16px;
+    border: 1px solid var(--mmi-warning, #dba617);
+    border-left-width: 4px;
+    border-radius: 4px;
+    background: var(--mmi-warning-bg, #fff3cd);
+    white-space: normal;
+}
+.mmi-x-confirm-title {
+    margin: 0 0 6px;
+    font-weight: 600;
+}
+.mmi-x-confirm-steps {
+    margin: 0 0 10px 20px;
+}
+.mmi-x-confirm-steps li {
+    margin-bottom: 4px;
+}
+.mmi-x-confirm-actions {
+    display: flex;
+    gap: 8px;
+}
+.mmi-x-confirm--bundle {
+    margin: 0;
+    flex: 1 1 320px;
+}
+
+/* Step-by-step progress inside the expanded row. */
+.mmi-x-flow {
+    margin: 0 0 14px;
+    white-space: normal;
+}
+.mmi-x-flow-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.mmi-x-flow-live {
+    font-size: 12px;
+    color: var(--mmi-info-text, #1565c0);
+}
+.mmi-x-flow .mmi-x-status--busy,
+.mmi-x-flow .mmi-x-status--success,
+.mmi-x-flow .mmi-x-status--blocked,
+.mmi-x-flow .mmi-x-status--error {
+    margin-bottom: 10px;
+    font-weight: 400;
+}
+.mmi-x-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.mmi-x-step {
+    position: relative;
+    display: grid;
+    grid-template-columns: 22px minmax(140px, 180px) 1fr auto;
+    align-items: start;
+    gap: 0 10px;
+    margin: 0;
+    padding: 0 0 12px;
+}
+/* The line joining each step's marker to the next. */
+.mmi-x-step:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    left: 10px;
+    top: 20px;
+    bottom: 0;
+    width: 2px;
+    background: #dcdcde;
+}
+.mmi-x-step--done:not(:last-child)::after {
+    background: var(--mmi-success, #45852C);
+}
+.mmi-x-step-icon {
+    width: 18px;
+    height: 18px;
+    margin-top: 1px;
+    border-radius: 50%;
+    border: 2px solid #c3c4c7;
+    background: #fff;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+}
+.mmi-x-step--done .mmi-x-step-icon {
+    border-color: var(--mmi-success, #45852C);
+    background: var(--mmi-success, #45852C);
+    color: #fff;
+}
+.mmi-x-step--done .mmi-x-step-icon::before { content: '✓'; }
+.mmi-x-step--active .mmi-x-step-icon {
+    border-color: var(--mmi-info-bg, #e3f2fd);
+    border-top-color: var(--mmi-info, #2196f3);
+    animation: mmiSpin 0.8s linear infinite;
+}
+.mmi-x-step--waiting .mmi-x-step-icon {
+    border-color: var(--mmi-warning, #dba617);
+    color: var(--mmi-warning-text, #856404);
+}
+.mmi-x-step--waiting .mmi-x-step-icon::before { content: '…'; }
+.mmi-x-step--attention .mmi-x-step-icon {
+    border-color: var(--mmi-error, #d63638);
+    background: var(--mmi-error, #d63638);
+    color: #fff;
+}
+.mmi-x-step--attention .mmi-x-step-icon::before { content: '!'; }
+.mmi-x-step-label {
+    font-weight: 600;
+}
+.mmi-x-step--todo .mmi-x-step-label,
+.mmi-x-step--todo .mmi-x-step-text {
+    color: var(--mmi-text-secondary, #646970);
+}
+.mmi-x-step--active .mmi-x-step-text { color: var(--mmi-info-text, #1565c0); }
+.mmi-x-step--waiting .mmi-x-step-text { color: var(--mmi-warning-text, #856404); }
+.mmi-x-step--attention .mmi-x-step-text { color: var(--mmi-error-text, #721c24); }
+.mmi-x-step-at {
+    font-size: 12px;
+    color: var(--mmi-text-secondary, #646970);
+    white-space: nowrap;
+}
+
+/* Customer emails + "Email again…", the XChange facts line, and the folded
+   manual-entry block. */
+.mmi-x-po-email-again {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0 12px;
+}
+.mmi-x-po-facts {
+    margin: 0 0 12px;
+    font-size: 13px;
+}
+.mmi-x-po-manual {
+    margin-top: 6px;
+    border-top: 1px solid #dcdcde;
+    padding-top: 10px;
+}
+.mmi-x-po-manual > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--mmi-text-secondary, #646970);
+}
+.mmi-x-po-manual[open] > summary {
+    margin-bottom: 10px;
+}
+.mmi-x-po-manual .mmi-x-po-manual-sync {
+    border-top: 0;
+    padding-top: 0;
+}
+
+/* Fulfill together, while running. */
+.mmi-x-bundle-running {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--mmi-info-text, #1565c0);
+    font-weight: 600;
+}
+
+@media (max-width: 782px) {
+    .mmi-x-step {
+        grid-template-columns: 22px 1fr;
+    }
+    .mmi-x-step-text,
+    .mmi-x-step-at {
+        grid-column: 2;
     }
 }

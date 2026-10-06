@@ -78,7 +78,7 @@ if ( isset( $_POST['mmi_xchange_save_settings'] ) && $can_save_settings && check
     }
     MMI_Settings::set( 'mmi_xchange_failed_message', $failed_message );
 
-    foreach ( [ 'mmi_xchange_log_only_errors', 'mmi_xchange_abort_on_error', 'mmi_xchange_auto_fulfill_live', 'mmi_xchange_auto_send_fulfillment_email' ] as $toggle ) {
+    foreach ( [ 'mmi_xchange_log_only_errors', 'mmi_xchange_abort_on_error', 'mmi_xchange_auto_fulfill_live', 'mmi_xchange_auto_send_fulfillment_email', 'mmi_xchange_skip_wc_completed_email' ] as $toggle ) {
         if ( (string) MMI_Settings::get( $toggle ) !== ( isset( $_POST[ $toggle ] ) ? 'yes' : 'no' ) ) {
             $changed_keys[] = $toggle;
         }
@@ -100,6 +100,7 @@ if ( isset( $_POST['mmi_xchange_save_settings'] ) && $can_save_settings && check
     // here — see MMI_Xchange_Checkout::auto_fulfill_permitted().
     MMI_Settings::set( 'mmi_xchange_auto_fulfill_live', isset( $_POST['mmi_xchange_auto_fulfill_live'] ) ? 'yes' : 'no' );
     MMI_Settings::set( 'mmi_xchange_auto_send_fulfillment_email', isset( $_POST[ 'mmi_xchange_auto_send_fulfillment_email' ] ) ? 'yes' : 'no' );
+    MMI_Settings::set( 'mmi_xchange_skip_wc_completed_email', isset( $_POST['mmi_xchange_skip_wc_completed_email'] ) ? 'yes' : 'no' );
 
     if ( $changed_secret_keys ) {
         mmi_xchange_audit( 'credentials.update', [ 'outcome' => 'success', 'details' => [ 'keys' => $changed_secret_keys ] ] );
@@ -243,6 +244,10 @@ $last_issue       = MMI_Xchange_Account::get_last_issue();
         <label><input type="checkbox" name="<?php echo esc_attr( 'mmi_xchange_auto_send_fulfillment_email' ); ?>" <?php checked( $get( 'mmi_xchange_auto_send_fulfillment_email', 'yes' ), 'yes' ); ?> /> <?php esc_html_e( 'Email the customer automatically after "Fulfill"', 'mmi-xchange-integration' ); ?></label>
     </div>
     <p class="description"><?php esc_html_e( 'On by default. After you click "Fulfill" (or "Fulfill together") and the PO is placed, the license email goes to the customer right away and the order is completed — no Email Customer modal. It only sends when the customer\'s real email and the license key are both known; otherwise the modal opens as before. A license XChange hasn\'t posted yet is re-checked for about 2 hours and sent when it appears. Completing a Reverb order also messages the buyer on Reverb and marks it shipped (Reverb plugin settings).', 'mmi-xchange-integration' ); ?></p>
+    <div class="mmi-x-field-row mmi-label-grid-row">
+        <label><input type="checkbox" name="mmi_xchange_skip_wc_completed_email" <?php checked( $get( 'mmi_xchange_skip_wc_completed_email', 'yes' ), 'yes' ); ?> /> <?php esc_html_e( 'Skip WooCommerce\'s "Completed order" email after the license email', 'mmi-xchange-integration' ); ?></label>
+    </div>
+    <p class="description"><?php esc_html_e( 'On by default. When an order made only of XChange items completes because every license email went out, the customer doesn\'t also get WooCommerce\'s "Your order is complete" email. Orders with other items, or completed without the license email, still get it.', 'mmi-xchange-integration' ); ?></p>
     <div class="mmi-x-field-row mmi-label-grid-row">
         <label for="mmi_xchange_po_prefix"><?php esc_html_e( 'PO Prefix', 'mmi-xchange-integration' ); ?></label>
         <input type="text" name="mmi_xchange_po_prefix" id="mmi_xchange_po_prefix" class="mmi-x-input mmi-x-input-narrow" value="<?php echo esc_attr( $get( 'mmi_xchange_po_prefix', '0000' ) ); ?>" />

@@ -3,7 +3,7 @@
  * Plugin Name: MMI Xchange
  * Plugin URI: https://mannmade.solutions/plugins/xchange-integration
  * Description: Full Xchange (xchangeb2b.com) integration — storefront checkout fulfillment, admin order search, dealer account health, and vendor directory.
- * Version: 1.37.0
+ * Version: 1.41.1
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Author: MannMade Solutions
@@ -26,7 +26,7 @@ if ( defined( 'MMI_HUB_WPALLIMPORT_SKIP' ) && MMI_HUB_WPALLIMPORT_SKIP ) {
 }
 
 /* ── Plugin constants ────── */
-define( 'MMI_XCHANGE_VERSION',  '1.37.0' );
+define( 'MMI_XCHANGE_VERSION',  '1.41.1' );
 define( 'MMI_XCHANGE_FILE',     __FILE__ );
 define( 'MMI_XCHANGE_PATH',     plugin_dir_path( __FILE__ ) );
 define( 'MMI_XCHANGE_URL',      plugin_dir_url( __FILE__ ) );
@@ -142,6 +142,7 @@ add_action( 'plugins_loaded', function () {
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-order-sync.php';
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-checkout.php';
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-fulfillment-queue.php';
+    require_once MMI_XCHANGE_PATH . 'includes/class-xchange-fulfillment-progress.php';
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-guest-email-request.php';
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-po-linker.php';
     require_once MMI_XCHANGE_PATH . 'includes/class-xchange-price-history.php';
@@ -231,6 +232,15 @@ add_action( 'plugins_loaded', function () {
     MMI_Xchange_Checkout::init();
     MMI_Xchange_Product_Fields::init();
     MMI_Xchange_Vendors::init();
+
+    // Catalog tab: mmi-data-pipeline's shared feed catalog, when it's active
+    // (its base class loads on plugins_loaded, so register on init).
+    add_action( 'init', static function () {
+        if ( class_exists( 'MMI_Pipeline_Feed_Catalog' ) ) {
+            require_once MMI_XCHANGE_PATH . 'includes/class-xchange-feed-catalog.php';
+            MMI_Pipeline_Feed_Catalog::register( new MMI_Xchange_Feed_Catalog() );
+        }
+    }, 5 );
     MMI_Xchange_COGS::init();
     MMI_Xchange_Order_Sync::init();
     MMI_Xchange_Price_History_Watcher::init();

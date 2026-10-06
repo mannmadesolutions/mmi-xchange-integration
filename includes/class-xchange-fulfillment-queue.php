@@ -78,113 +78,155 @@ class MMI_Xchange_Fulfillment_Queue {
 
         $orders = [];
         foreach ( $order_ids as $order_id ) {
-            $order = wc_get_order( (int) $order_id );
-            if ( ! $order ) {
-                continue;
+            $row = self::build_row( (int) $order_id );
+            if ( $row !== null ) {
+                $orders[] = $row;
             }
-
-            $items = self::xchange_items( $order );
-            if ( empty( $items ) ) {
-                continue;
-            }
-
-            $name   = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
-            // MMI_Marketplace_Order_Sources is the single source of truth for
-            // "which marketplace, if any, did this order come from" — every
-            // registered marketplace (Reverb today, others later) resolves
-            // through the same lookup, so this panel's badge can never
-            // silently disagree with MMI_Xchange_Checkout::is_externally_sourced()
-            // (which delegates to the same registry) or drift as new
-            // marketplaces are added.
-            //
-            // MMI_Marketplace_Order_Sources lived in mmi-hub, deleted
-            // suite-wide 2026-09-17 without being migrated — it no longer
-            // exists, so $source is always null here and this badge never
-            // shows a marketplace. Purely cosmetic: the actual fulfillment
-            // block for externally-sourced orders lives in
-            // MMI_Xchange_Checkout::is_externally_sourced(), which fails
-            // closed independently of this display value.
-            $source = class_exists( 'MMI_Marketplace_Order_Sources' )
-                ? MMI_Marketplace_Order_Sources::get_source_for_order( $order )
-                : null;
-
-            $orders[] = [
-                'order_id'        => $order->get_id(),
-                'order_number'    => $order->get_order_number(),
-                'edit_url'        => $order->get_edit_order_url(),
-                'date'            => $order->get_date_created() ? $order->get_date_created()->date( 'Y-m-d H:i' ) : '',
-                'status'          => $order->get_status(),
-                'customer_name'      => $name !== '' ? $name : $order->get_billing_email(),
-                'customer_email'     => $order->get_billing_email(),
-                'is_guest'           => $order->get_customer_id() === 0,
-                'customer_edit_url'  => $order->get_customer_id() > 0
-                    ? get_edit_user_link( $order->get_customer_id() )
-                    : '',
-                // MMI_Guest_Customer_Converter owns this detection — reused
-                // here so the "looks relayed, ask for the real email" hint
-                // matches exactly what the converter itself would show.
-                // That class lived in mmi-hub, deleted suite-wide 2026-09-17
-                // without being migrated, so this always evaluates false —
-                // the hint no longer appears. Cosmetic only.
-                'looks_relayed'   => class_exists( 'MMI_Guest_Customer_Converter' )
-                    && MMI_Guest_Customer_Converter::looks_like_relay_email( $order->get_billing_email() ),
-                // mmi-reverb-integration's automatic "please reply with your
-                // real email" flow (MMI_Reverb_Email_Request_Manager) — when
-                // active, it replaces this panel's manual "Link to Customer"
-                // form for a guest/relayed order with a read-only status
-                // readout instead (see renderGuestConvertHtml() in
-                // admin-xchange.js), since the automation already handles it.
-                'reverb_automation_active' => class_exists( 'MMI_Reverb_Email_Request_Manager' )
-                    && MMI_Reverb_Email_Request_Manager::is_enabled(),
-                // Plain "is mmi-reverb-integration installed and active"
-                // check, independent of the auto-request setting above —
-                // drives the guest-convert widget's manual "📨 Request via
-                // Reverb Message" button (MMI_Xchange_Ajax::
-                // request_guest_email()), which an admin can click whether
-                // or not the automatic flow's own toggle is on.
-                'reverb_available' => class_exists( 'MMI_Reverb_API_Client' ),
-                'email_request_status'     => class_exists( 'MMI_Reverb_Email_Request_Manager' )
-                    ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_STATUS, true )
-                    : '',
-                'email_request_sent_at'      => class_exists( 'MMI_Reverb_Email_Request_Manager' )
-                    ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_SENT_AT, true )
-                    : '',
-                'email_request_converted_at' => class_exists( 'MMI_Reverb_Email_Request_Manager' )
-                    ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_CONVERTED_AT, true )
-                    : '',
-                // Order number whose Reverb request this order joined (one
-                // request per buyer — see MMI_Reverb_Email_Request_Manager::
-                // share_request_with_siblings()), '' when it's its own.
-                'email_request_shared_with'  => self::shared_request_order_number( $order ),
-                'total'           => $order->get_total(),
-                'currency'        => $order->get_currency(),
-                'fulfilled_po'    => (string) $order->get_meta( self::FULFILLED_META_KEY, true ),
-                'source_label'    => $source['label'] ?? '',
-                'source_logo_url' => $source['logo_url'] ?? '',
-                'source_order_url' => $source['order_url'] ?? '',
-                // Last fulfillment-email attempt (success or failure) —
-                // previously only visible in MMI_Logger's log file, not
-                // from this UI, which is exactly where an admin looks after
-                // a customer says they never received it.
-                'email_history'   => self::email_history( $order->get_id() ),
-                // Same customer across separate orders — see
-                // MMI_Software_Fulfillment::customer_key(). The queue JS
-                // groups rows sharing a key into one combined fulfillment.
-                'customer_key'    => class_exists( 'MMI_Software_Fulfillment' )
-                    ? MMI_Software_Fulfillment::customer_key( $order )
-                    : 'o:' . $order->get_id(),
-                // Xchange PO enrichment (license/auth/vendor/CCSA/price)
-                // filled in below via one batched lookup — never once per
-                // order.
-                'xchange_license'    => '',
-                'xchange_auth'       => '',
-                'xchange_vendor'     => '',
-                'xchange_price'      => null,
-                'xchange_in_ccsa'    => false,
-                'items'              => $items,
-            ];
         }
 
+        return self::enrich( $orders );
+    }
+
+    /**
+     * Fresh rows for specific orders — the Orders tab's live progress check
+     * (MMI_Xchange_Ajax::fulfillment_progress()), same shape as
+     * get_recent_orders() so the browser can swap a row in place.
+     *
+     * @param int[] $order_ids
+     */
+    public static function get_rows_for( array $order_ids ): array {
+        $rows = [];
+        foreach ( array_slice( array_unique( array_map( 'intval', $order_ids ) ), 0, 25 ) as $order_id ) {
+            $row = self::build_row( $order_id );
+            if ( $row !== null ) {
+                $rows[] = $row;
+            }
+        }
+        return self::enrich( $rows );
+    }
+
+    /** One order's queue row, before the batched enrichment in enrich(). */
+    private static function build_row( int $order_id ): ?array {
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            return null;
+        }
+
+        $items = self::xchange_items( $order );
+        if ( empty( $items ) ) {
+            return null;
+        }
+
+        $name   = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+        // MMI_Marketplace_Order_Sources is the single source of truth for
+        // "which marketplace, if any, did this order come from" — every
+        // registered marketplace (Reverb today, others later) resolves
+        // through the same lookup, so this panel's badge can never
+        // silently disagree with MMI_Xchange_Checkout::is_externally_sourced()
+        // (which delegates to the same registry) or drift as new
+        // marketplaces are added.
+        //
+        // MMI_Marketplace_Order_Sources lived in mmi-hub, deleted
+        // suite-wide 2026-09-17 without being migrated — it no longer
+        // exists, so $source is always null here and this badge never
+        // shows a marketplace. Purely cosmetic: the actual fulfillment
+        // block for externally-sourced orders lives in
+        // MMI_Xchange_Checkout::is_externally_sourced(), which fails
+        // closed independently of this display value.
+        $source = class_exists( 'MMI_Marketplace_Order_Sources' )
+            ? MMI_Marketplace_Order_Sources::get_source_for_order( $order )
+            : null;
+
+        return [
+            'order_id'        => $order->get_id(),
+            'order_number'    => $order->get_order_number(),
+            'edit_url'        => $order->get_edit_order_url(),
+            'date'            => $order->get_date_created() ? $order->get_date_created()->date( 'Y-m-d H:i' ) : '',
+            'status'          => $order->get_status(),
+            // Named in the detail header's "why can't I fulfill" reason
+            // for an unpaid (pending/on-hold) order.
+            'payment_method_title' => $order->get_payment_method_title(),
+            // 'open'/'check' while a Stripe Radar review holds the payment
+            // (mmi-admin's MMI_Stripe_Review_Alerts), shown as the reason.
+            'stripe_review'        => (string) $order->get_meta( '_mmi_stripe_review', true ),
+            'customer_name'      => $name !== '' ? $name : $order->get_billing_email(),
+            'customer_email'     => $order->get_billing_email(),
+            'is_guest'           => $order->get_customer_id() === 0,
+            'customer_edit_url'  => $order->get_customer_id() > 0
+                ? get_edit_user_link( $order->get_customer_id() )
+                : '',
+            // MMI_Guest_Customer_Converter owns this detection — reused
+            // here so the "looks relayed, ask for the real email" hint
+            // matches exactly what the converter itself would show.
+            // That class lived in mmi-hub, deleted suite-wide 2026-09-17
+            // without being migrated, so this always evaluates false —
+            // the hint no longer appears. Cosmetic only.
+            'looks_relayed'   => class_exists( 'MMI_Guest_Customer_Converter' )
+                && MMI_Guest_Customer_Converter::looks_like_relay_email( $order->get_billing_email() ),
+            // mmi-reverb-integration's automatic "please reply with your
+            // real email" flow (MMI_Reverb_Email_Request_Manager) — when
+            // active, it replaces this panel's manual "Link to Customer"
+            // form for a guest/relayed order with a read-only status
+            // readout instead (see renderGuestConvertHtml() in
+            // admin-xchange.js), since the automation already handles it.
+            'reverb_automation_active' => class_exists( 'MMI_Reverb_Email_Request_Manager' )
+                && MMI_Reverb_Email_Request_Manager::is_enabled(),
+            // Plain "is mmi-reverb-integration installed and active"
+            // check, independent of the auto-request setting above —
+            // drives the guest-convert widget's manual "📨 Request via
+            // Reverb Message" button (MMI_Xchange_Ajax::
+            // request_guest_email()), which an admin can click whether
+            // or not the automatic flow's own toggle is on.
+            'reverb_available' => class_exists( 'MMI_Reverb_API_Client' ),
+            'email_request_status'     => class_exists( 'MMI_Reverb_Email_Request_Manager' )
+                ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_STATUS, true )
+                : '',
+            'email_request_sent_at'      => class_exists( 'MMI_Reverb_Email_Request_Manager' )
+                ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_SENT_AT, true )
+                : '',
+            'email_request_converted_at' => class_exists( 'MMI_Reverb_Email_Request_Manager' )
+                ? (string) $order->get_meta( MMI_Reverb_Email_Request_Manager::META_CONVERTED_AT, true )
+                : '',
+            // Order number whose Reverb request this order joined (one
+            // request per buyer — see MMI_Reverb_Email_Request_Manager::
+            // share_request_with_siblings()), '' when it's its own.
+            'email_request_shared_with'  => self::shared_request_order_number( $order ),
+            'total'           => $order->get_total(),
+            'currency'        => $order->get_currency(),
+            'fulfilled_po'    => (string) $order->get_meta( self::FULFILLED_META_KEY, true ),
+            'source_label'    => $source['label'] ?? '',
+            'source_logo_url' => $source['logo_url'] ?? '',
+            'source_order_url' => $source['order_url'] ?? '',
+            // Last fulfillment-email attempt (success or failure) —
+            // previously only visible in MMI_Logger's log file, not
+            // from this UI, which is exactly where an admin looks after
+            // a customer says they never received it.
+            'email_history'   => self::email_history( $order->get_id() ),
+            // Same customer across separate orders — see
+            // MMI_Software_Fulfillment::customer_key(). The queue JS
+            // groups rows sharing a key into one combined fulfillment.
+            'customer_key'    => class_exists( 'MMI_Software_Fulfillment' )
+                ? MMI_Software_Fulfillment::customer_key( $order )
+                : 'o:' . $order->get_id(),
+            // Xchange PO enrichment (license/auth/vendor/CCSA/price)
+            // filled in below via one batched lookup — never once per
+            // order.
+            'xchange_license'    => '',
+            'xchange_auth'       => '',
+            'xchange_vendor'     => '',
+            'xchange_price'      => null,
+            'xchange_in_ccsa'    => false,
+            'reverb_order_number' => (string) $order->get_meta( '_mmi_reverb_order_number' ),
+            'items'              => $items,
+        ];
+    }
+
+    /**
+     * Batched per-page enrichment: XChange PO data (one query for every PO)
+     * and each order's step-by-step progress (one Action Scheduler query per
+     * hook — see MMI_Xchange_Fulfillment_Progress::preload()).
+     */
+    private static function enrich( array $orders ): array {
         // One batched lookup for every fulfilled PO on this page, instead of
         // an N+1 query per order — see get_orders_by_po_numbers()'s own note.
         $po_numbers   = array_column( $orders, 'fulfilled_po' );
@@ -205,6 +247,19 @@ class MMI_Xchange_Fulfillment_Queue {
             $order_row['xchange_in_ccsa'] = $xrow['in_ccsa'];
         }
         unset( $order_row );
+
+        if ( class_exists( 'MMI_Xchange_Fulfillment_Progress' ) ) {
+            MMI_Xchange_Fulfillment_Progress::preload( array_column( $orders, 'order_id' ) );
+            foreach ( $orders as &$order_row ) {
+                $order = wc_get_order( $order_row['order_id'] );
+                if ( ! $order ) {
+                    continue;
+                }
+                $order_row['progress']  = MMI_Xchange_Fulfillment_Progress::build( $order, $order_row );
+                $order_row['next_rank'] = $order_row['progress']['next']['rank'];
+            }
+            unset( $order_row );
+        }
 
         return $orders;
     }
@@ -381,6 +436,9 @@ class MMI_Xchange_Fulfillment_Queue {
                 'sku'         => $sku,
                 'fulfillment_status' => (string) ( $record['status'] ?? '' ),
                 'placed_po'          => (string) ( $record['po_number'] ?? '' ),
+                'placed_at'          => (string) ( $record['placed_at'] ?? '' ),
+                'fulfilled_at'       => (string) ( $record['fulfilled_at'] ?? '' ),
+                'has_license'        => ( $record['license_key'] ?? '' ) !== '',
                 'product'     => $product->get_name(),
                 'qty'         => (int) $item->get_quantity(),
                 // What the customer actually paid for this line (ex-tax) —

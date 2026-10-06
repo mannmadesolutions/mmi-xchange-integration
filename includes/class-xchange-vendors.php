@@ -55,11 +55,27 @@ class MMI_Xchange_Vendors {
     const MEDIA_IMPORT_BATCH_WATCHDOG_HOOK = 'mmi_xchange_import_media_watchdog';
 
     /**
-     * Unix timestamp of the last successful write_web_assets_json() run,
+     * Unix timestamp of the last successful web-assets run (finish_web_assets_run()),
      * used as the Web Asset API's `since` param on the next run — see that
      * method's docblock for why this must merge, not replace, the cache.
      */
     const WEB_ASSETS_SINCE_KEY = 'mmi_xchange_web_assets_since';
+
+    /**
+     * The web-assets pull runs as a chain of short Action Scheduler batches
+     * (start_web_assets_run() → run_web_assets_batch()): ~115 vendor
+     * requests 2 s apart is ~4 minutes, and run in one go it was killed by
+     * the cron runner's 45 s limit nearly every hour (file stuck at 14:39 on
+     * 2026-10-05). Each batch saves its records to a part file; the last one
+     * merges them into the real file in one rename.
+     */
+    const WEB_ASSETS_RUN_KEY        = 'mmi_xchange_web_assets_run';
+    const WEB_ASSETS_BATCH_HOOK     = 'mmi_xchange_web_assets_batch';
+    const WEB_ASSETS_GROUP          = 'mmi-xchange-web-assets';
+    const WEB_ASSETS_BATCH_VENDORS  = 6;
+    const WEB_ASSETS_BATCH_SECONDS  = 25;
+    /** A run untouched this long is dead (killed step) and may be replaced. */
+    const WEB_ASSETS_RUN_STALE      = 900;
 
     /**
      * Heartbeat key for mmi-data-pipeline's digest staleness check (see
@@ -125,6 +141,7 @@ class MMI_Xchange_Vendors {
         // toggle on). Rewired onto the live per-source hook so this fires on
         // the same cadence as the main Xchange product-feed fetch.
         add_action( 'mmi_pipeline_source_fetch_xchange', [ __CLASS__, 'cron_write_web_assets_json' ] );
+        add_action( self::WEB_ASSETS_BATCH_HOOK, [ __CLASS__, 'run_web_assets_batch' ], 10, 1 );
         add_filter( 'mmi_pipeline_listener_heartbeats', [ __CLASS__, 'register_web_assets_heartbeat' ] );
     }
 
@@ -346,112 +363,236 @@ class MMI_Xchange_Vendors {
         if ( ! class_exists( 'MMI_DB' ) || ! \MMI_DB::get_setting( 'mmi_xchange_web_assets_enabled', false ) ) {
             return;
         }
+        self::start_web_assets_run( 'cron' );
+    }
+
+    public static function web_assets_enabled(): bool {
+        return class_exists( 'MMI_DB' ) && (bool) \MMI_DB::get_setting( 'mmi_xchange_web_assets_enabled', false );
+    }
+
+    /** The run in progress: { run_id, trigger, started, touched, since, vendors, offset, parts, records, failed }. */
+    public static function web_assets_run(): ?array {
+        $run = json_decode( (string) MMI_Settings::get( self::WEB_ASSETS_RUN_KEY, '' ), true );
+        return is_array( $run ) ? $run : null;
+    }
+
+    public static function web_assets_run_active(): bool {
+        $run = self::web_assets_run();
+        return $run !== null && time() - (int) ( $run['touched'] ?? 0 ) < self::WEB_ASSETS_RUN_STALE;
+    }
+
+    /**
+     * Queues a web-assets pull. Returns at once; the requests happen in the
+     * batches.
+     *
+     * @return array{started:bool, reason?:string}
+     */
+    public static function start_web_assets_run( string $trigger ): array {
+        if ( ! function_exists( 'as_schedule_single_action' ) ) {
+            return [ 'started' => false, 'reason' => 'unavailable' ];
+        }
+        if ( self::web_assets_run_active() ) {
+            return [ 'started' => false, 'reason' => 'running' ];
+        }
+        $stale = self::web_assets_run();
+        if ( $stale ) {
+            MMI_Logger::warn( 'XChange web-assets run ' . $stale['run_id'] . ' stopped partway; discarding it and starting over.', [], 'xchange', 'MMI_Xchange_Vendors' );
+            self::clear_web_assets_run( $stale );
+        }
+
+        $vendors = self::web_assets_vendor_ids();
+        if ( ! $vendors ) {
+            MMI_Logger::error( 'XChange web-assets run not started: no vendor list (XchangeVendors.json is missing or empty).', [], 'xchange', 'MMI_Xchange_Vendors' );
+            return [ 'started' => false, 'reason' => 'no_vendors' ];
+        }
+
+        // Incremental (`since`) only when there is a full file to merge
+        // into — the API's own advice is "call it once and cache it".
+        $path  = self::web_assets_path();
+        $since = (int) MMI_Settings::get( self::WEB_ASSETS_SINCE_KEY, 0 );
+        $run   = [
+            'run_id'  => wp_generate_password( 10, false ),
+            'trigger' => $trigger,
+            'started' => time(),
+            'touched' => time(),
+            'since'   => ( $since > 0 && file_exists( $path ) && filesize( $path ) > 1024 ) ? $since : null,
+            'vendors' => $vendors,
+            'offset'  => 0,
+            'parts'   => 0,
+            'records' => 0,
+            'failed'  => 0,
+        ];
+        self::save_web_assets_run( $run );
+        as_schedule_single_action( time(), self::WEB_ASSETS_BATCH_HOOK, [ $run['run_id'] ], self::WEB_ASSETS_GROUP );
+        return [ 'started' => true ];
+    }
+
+    /**
+     * Action Scheduler callback: up to WEB_ASSETS_BATCH_VENDORS vendors (and
+     * never past WEB_ASSETS_BATCH_SECONDS), then the next batch — or, once
+     * every vendor is done, the merge.
+     */
+    public static function run_web_assets_batch( $run_id ): void {
+        $run = self::web_assets_run();
+        if ( ! $run || $run['run_id'] !== (string) $run_id ) {
+            return;
+        }
+        $total = count( $run['vendors'] );
 
         try {
-            $count = self::write_web_assets_json();
-            MMI_Logger::info( "XChange web-assets JSON written: {$count} SKU(s).", [], 'xchange', 'MMI_Xchange_Vendors' );
-            MMI_Settings::set( self::WEB_ASSETS_LAST_SUCCESS_KEY, time() );
-        } catch ( Exception $e ) {
-            MMI_Logger::error( 'XChange web-assets JSON write failed: ' . $e->getMessage(), [], 'xchange', 'MMI_Xchange_Vendors' );
+            if ( $run['offset'] >= $total ) {
+                self::finish_web_assets_run( $run );
+                return;
+            }
+
+            $client = new MMI_Xchange_API_Client();
+            if ( ! $client->has_credentials() ) {
+                throw new Exception( 'XChange API credentials are not configured.' );
+            }
+
+            $deadline = microtime( true ) + self::WEB_ASSETS_BATCH_SECONDS;
+            $records  = [];
+            $i        = (int) $run['offset'];
+            $end      = min( $total, $i + self::WEB_ASSETS_BATCH_VENDORS );
+            while ( $i < $end && microtime( true ) < $deadline ) {
+                $assets = $client->fetch_web_assets( (string) $run['vendors'][ $i ], $run['since'] );
+                $i++;
+                if ( is_wp_error( $assets ) ) {
+                    $run['failed']++;
+                    continue;
+                }
+                foreach ( (array) $assets as $product ) {
+                    if ( isset( $product['sku'] ) && $product['sku'] !== '' ) {
+                        $records[ (string) $product['sku'] ] = self::web_asset_record( $product );
+                    }
+                }
+            }
+
+            if ( $records ) {
+                $run['parts']++;
+                $part = self::web_assets_part_path( $run, $run['parts'] );
+                // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_put_contents
+                if ( file_put_contents( $part, wp_json_encode( array_values( $records ) ) ) === false ) {
+                    throw new Exception( 'Could not write ' . basename( $part ) );
+                }
+                $run['records'] += count( $records );
+            }
+            $run['offset']  = $i;
+            $run['touched'] = time();
+            self::save_web_assets_run( $run );
+            as_schedule_single_action( time() + 1, self::WEB_ASSETS_BATCH_HOOK, [ $run['run_id'] ], self::WEB_ASSETS_GROUP );
+        } catch ( Throwable $e ) {
+            MMI_Logger::error( 'XChange web-assets run failed: ' . $e->getMessage(), [], 'xchange', 'MMI_Xchange_Vendors' );
+            self::clear_web_assets_run( $run );
         }
     }
 
     /**
-     * @return int Number of SKU records written.
+     * Merges the run's part files into the existing file — never starts from
+     * empty: an incremental pull only returns changed products, so replacing
+     * the file with just those would drop every other SKU — then swaps it in
+     * with one rename.
      */
-    private static function write_web_assets_json(): int {
-        set_time_limit( 0 );
-
-        $client = new MMI_Xchange_API_Client();
-        if ( ! $client->has_credentials() ) {
-            throw new Exception( 'XChange API credentials are not configured.' );
+    private static function finish_web_assets_run( array $run ): void {
+        $total = count( $run['vendors'] );
+        if ( $total > 0 && $run['failed'] >= $total ) {
+            MMI_Logger::error( "XChange web-assets run failed: all {$total} vendor requests failed; file left as it was.", [], 'xchange', 'MMI_Xchange_Vendors' );
+            self::clear_web_assets_run( $run );
+            return;
         }
 
-        $json_dir  = mmi_shared_lib_json_dir();
-        $json_path = trailingslashit( $json_dir ) . 'xchange-web-assets.json';
-
-        // Seed $records from the existing cache and reuse a prior fetch time
-        // as `since` — the Web Asset API's own docs say "call it once and
-        // cache the results", with `since` built for exactly this. Critical:
-        // this MUST merge into the existing records, never start from an
-        // empty array when using `since` — an incremental pull only returns
-        // recently-changed products, so overwriting the full cache with just
-        // that smaller set would silently drop every SKU Xchange didn't
-        // report as changed this run (the same "fake incremental" data-loss
-        // shape AGENTS.md's Operational Continuity rules already warn
-        // against for other sync jobs in this suite).
+        $path    = self::web_assets_path();
         $records = [];
-        $since   = null;
-        if ( file_exists( $json_path ) ) {
-            $existing = json_decode( (string) file_get_contents( $json_path ), true );
+        if ( file_exists( $path ) ) {
+            $existing = json_decode( (string) file_get_contents( $path ), true );
             foreach ( (array) ( $existing['web_assets'] ?? [] ) as $row ) {
                 if ( isset( $row['sku'] ) && $row['sku'] !== '' ) {
                     $records[ (string) $row['sku'] ] = $row;
                 }
             }
-            if ( ! empty( $records ) ) {
-                $stored = (int) MMI_Settings::get( self::WEB_ASSETS_SINCE_KEY, 0 );
-                $since  = $stored > 0 ? $stored : null;
-            }
         }
-
-        $vendors = $client->fetch_vendors();
-        if ( is_wp_error( $vendors ) ) {
-            throw new Exception( $vendors->get_error_message() );
-        }
-
-        // Recorded before the fetch loop starts (not after) so nothing
-        // updated mid-run falls into the gap between "since" and "now".
-        $fetch_started_at = time();
-
-        foreach ( (array) ( $vendors['vendors'] ?? [] ) as $vendor ) {
-            $assets = $client->fetch_web_assets( (string) ( $vendor['vendor_id'] ?? '' ), $since );
-            if ( is_wp_error( $assets ) ) {
-                continue;
-            }
-
-            foreach ( (array) $assets as $product ) {
-                if ( ! isset( $product['sku'] ) || $product['sku'] === '' ) {
-                    continue;
+        for ( $n = 1; $n <= (int) $run['parts']; $n++ ) {
+            $part_path = self::web_assets_part_path( $run, $n );
+            $part      = file_exists( $part_path ) ? json_decode( (string) file_get_contents( $part_path ), true ) : [];
+            foreach ( (array) $part as $row ) {
+                if ( isset( $row['sku'] ) ) {
+                    $records[ (string) $row['sku'] ] = $row;
                 }
-
-                $images = array_values( self::flatten( '', (array) ( $product['images'] ?? [] ) ) );
-
-                $records[ (string) $product['sku'] ] = [
-                    'sku'              => (string) $product['sku'],
-                    'images'           => $images,
-                    'long_description' => isset( $product['long_description'] )
-                        ? self::parse_long_description( $product['long_description'] )
-                        : '',
-                    // Passed through verbatim (no transformation) so
-                    // mmi-data-pipeline's Field Resolver can address into
-                    // these with its existing [key=value]/[N] nested-array
-                    // syntax. Previously discarded here even though the Web
-                    // Asset API already returns them in the same response —
-                    // see the "Xchange Data Enrichment" plan, Phase 1a.
-                    'features'         => $product['features']     ?? null,
-                    'requirements'     => $product['requirements'] ?? null,
-                    'videos'           => $product['videos']       ?? null,
-                    'licensing'        => $product['licensing']    ?? null,
-                    'platforms'        => $product['platforms']    ?? null,
-                ];
             }
         }
 
-        if ( ! is_dir( $json_dir ) ) {
-            wp_mkdir_p( $json_dir );
-        }
-
-        $payload = [
+        $tmp = $path . '.tmp';
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_put_contents
+        $ok = file_put_contents( $tmp, wp_json_encode( [
             'generated_at' => current_time( 'mysql' ),
             'web_assets'   => array_values( $records ),
+        ], JSON_PRETTY_PRINT ) ) !== false && rename( $tmp, $path );
+        if ( ! $ok ) {
+            MMI_Logger::error( 'XChange web-assets run failed: could not write ' . basename( $path ), [], 'xchange', 'MMI_Xchange_Vendors' );
+            self::clear_web_assets_run( $run );
+            return;
+        }
+
+        // `since` = when this run started, so nothing changed mid-run is missed.
+        MMI_Settings::set( self::WEB_ASSETS_SINCE_KEY, (string) $run['started'] );
+        MMI_Settings::set( self::WEB_ASSETS_LAST_SUCCESS_KEY, time() );
+        MMI_Logger::info( sprintf(
+            'XChange web-assets JSON written: %d SKU(s), %d changed this run, %d of %d vendor requests failed, %ds.',
+            count( $records ), (int) $run['records'], (int) $run['failed'], $total, time() - (int) $run['started']
+        ), [], 'xchange', 'MMI_Xchange_Vendors' );
+        self::clear_web_assets_run( $run );
+    }
+
+    private static function web_asset_record( array $product ): array {
+        return [
+            'sku'              => (string) $product['sku'],
+            'images'           => array_values( self::flatten( '', (array) ( $product['images'] ?? [] ) ) ),
+            'long_description' => isset( $product['long_description'] )
+                ? self::parse_long_description( $product['long_description'] )
+                : '',
+            // Passed through verbatim so mmi-data-pipeline's Field Resolver
+            // can address into them with its [key=value]/[N] syntax.
+            'features'         => $product['features']     ?? null,
+            'requirements'     => $product['requirements'] ?? null,
+            'videos'           => $product['videos']       ?? null,
+            'licensing'        => $product['licensing']    ?? null,
+            'platforms'        => $product['platforms']    ?? null,
         ];
+    }
 
-        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_put_contents
-        file_put_contents( $json_path, wp_json_encode( $payload, JSON_PRETTY_PRINT ) );
-        MMI_Settings::set( self::WEB_ASSETS_SINCE_KEY, (string) $fetch_started_at );
+    /** Vendor IDs from the pipeline's own vendors file — no extra API call. */
+    private static function web_assets_vendor_ids(): array {
+        $file = trailingslashit( mmi_shared_lib_json_dir() ) . 'XchangeVendors.json';
+        $data = file_exists( $file ) ? json_decode( (string) file_get_contents( $file ), true ) : null;
+        $ids  = [];
+        foreach ( (array) ( $data['vendors'] ?? [] ) as $vendor ) {
+            if ( ! empty( $vendor['vendor_id'] ) ) {
+                $ids[] = (string) $vendor['vendor_id'];
+            }
+        }
+        return array_values( array_unique( $ids ) );
+    }
 
-        return count( $records );
+    public static function web_assets_path(): string {
+        return trailingslashit( mmi_shared_lib_json_dir() ) . 'xchange-web-assets.json';
+    }
+
+    private static function web_assets_part_path( array $run, int $n ): string {
+        return trailingslashit( mmi_shared_lib_json_dir() ) . 'xchange-web-assets.part-' . sanitize_key( $run['run_id'] ) . '-' . $n . '.json';
+    }
+
+    private static function save_web_assets_run( array $run ): void {
+        MMI_Settings::set( self::WEB_ASSETS_RUN_KEY, wp_json_encode( $run ) );
+    }
+
+    private static function clear_web_assets_run( array $run ): void {
+        for ( $n = 1; $n <= (int) ( $run['parts'] ?? 0 ); $n++ ) {
+            $part = self::web_assets_part_path( $run, $n );
+            if ( file_exists( $part ) ) {
+                wp_delete_file( $part );
+            }
+        }
+        MMI_Settings::delete( self::WEB_ASSETS_RUN_KEY );
     }
 
     /* ── Media import ─────────────────────────────────────────────────────── */
@@ -958,7 +1099,7 @@ class MMI_Xchange_Vendors {
             'already_imported_attachments' => 0,
         ];
 
-        // Same resolver as write_web_assets_json() above — mmi-data-pipeline's
+        // Same resolver as web_assets_path() above — mmi-data-pipeline's
         // own Xchange updater (MMI_Pipeline_Xchange_Updater) writes the
         // cached feed here via the identical mmi_shared_lib_json_dir() call.
         $json_dir  = mmi_shared_lib_json_dir();

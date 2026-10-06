@@ -36,7 +36,7 @@ $import_media_state = MMI_Xchange_Vendors::get_import_media_state();
         <button type="button" id="mmi-x-vendors-refresh" class="button">↺ <?php esc_html_e( 'Refresh', 'mmi-xchange-integration' ); ?></button>
     </div>
 
-    <div class="mmi-x-table-scroll">
+    <div class="mmi-x-table-scroll mmi-x-table-scroll--full">
         <table class="mmi-x-table" id="mmi-x-vendors-table">
             <thead>
                 <tr>

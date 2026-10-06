@@ -23,6 +23,7 @@ class MMI_Xchange_Ajax {
         add_action( 'wp_ajax_mmi_xchange_scan_po_matches',   [ __CLASS__, 'scan_po_matches' ] );
         add_action( 'wp_ajax_mmi_xchange_find_po_candidate', [ __CLASS__, 'find_po_candidate' ] );
         add_action( 'wp_ajax_mmi_xchange_link_order',        [ __CLASS__, 'link_order' ] );
+        add_action( 'wp_ajax_mmi_xchange_fulfillment_progress', [ __CLASS__, 'fulfillment_progress' ] );
         add_action( 'wp_ajax_mmi_x_request_guest_email',     [ __CLASS__, 'request_guest_email' ] );
         add_action( 'wp_ajax_mmi_xchange_trigger_sync',      [ __CLASS__, 'trigger_sync' ] );
         add_action( 'wp_ajax_mmi_xchange_full_sync',         [ __CLASS__, 'full_sync' ] );
@@ -124,6 +125,19 @@ class MMI_Xchange_Ajax {
     public static function fetch_fulfillment_queue(): void {
         self::guard();
         wp_send_json_success( [ 'orders' => MMI_Xchange_Fulfillment_Queue::get_recent_orders() ] );
+    }
+
+    /**
+     * The Orders tab's live progress check: fresh queue rows for just the
+     * orders still moving (at most 25), polled while any automated step is
+     * running. Read-only.
+     *
+     * POST order_ids: comma-separated WC order IDs.
+     */
+    public static function fulfillment_progress(): void {
+        self::guard();
+        $ids = array_filter( array_map( 'absint', explode( ',', sanitize_text_field( wp_unslash( $_POST['order_ids'] ?? '' ) ) ) ) );
+        wp_send_json_success( [ 'orders' => $ids ? MMI_Xchange_Fulfillment_Queue::get_rows_for( $ids ) : [] ] );
     }
 
     /**
