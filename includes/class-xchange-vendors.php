@@ -1565,24 +1565,17 @@ class MMI_Xchange_Vendors {
             return self::stringify( 0, $input );
         }
 
+        // Blocks are [ format => content ]: paragraph/text/heading carry a string, list an array of
+        // strings. Every block keeps its own text; an unknown format must never dump the whole
+        // structure as "heading: …, paragraph: …" (2,308 web-asset records did, 2026-10-06, and
+        // the import wrote that text into product descriptions).
         $output = '';
         foreach ( $input as $text_block ) {
-            if ( ! is_array( $text_block ) ) {
-                return self::stringify( 0, $input );
-            }
-            foreach ( $text_block as $format => $content ) {
-                if ( $format === 'list' ) {
-                    foreach ( (array) $content as $text ) {
-                        if ( trim( $text ) !== '' ) {
-                            $output .= trim( $text ) . "\n\n";
-                        }
+            foreach ( is_array( $text_block ) ? $text_block : [ 'text' => $text_block ] as $content ) {
+                foreach ( is_array( $content ) ? $content : [ $content ] as $text ) {
+                    if ( is_scalar( $text ) && trim( (string) $text ) !== '' ) {
+                        $output .= trim( (string) $text ) . "\n\n";
                     }
-                } elseif ( in_array( $format, [ 'text', 'paragraph' ], true ) ) {
-                    if ( trim( (string) $content ) !== '' ) {
-                        $output .= trim( $content ) . "\n\n";
-                    }
-                } else {
-                    return self::stringify( 0, $input );
                 }
             }
         }
