@@ -3,7 +3,7 @@
  * Plugin Name: MMI Xchange
  * Plugin URI: https://mannmade.solutions/plugins/xchange-integration
  * Description: Full Xchange (xchangeb2b.com) integration — storefront checkout fulfillment, admin order search, dealer account health, and vendor directory.
- * Version: 1.41.2
+ * Version: 1.41.3
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Author: MannMade Solutions
@@ -26,7 +26,7 @@ if ( defined( 'MMI_HUB_WPALLIMPORT_SKIP' ) && MMI_HUB_WPALLIMPORT_SKIP ) {
 }
 
 /* ── Plugin constants ────── */
-define( 'MMI_XCHANGE_VERSION',  '1.41.2' );
+define( 'MMI_XCHANGE_VERSION',  '1.41.3' );
 define( 'MMI_XCHANGE_FILE',     __FILE__ );
 define( 'MMI_XCHANGE_PATH',     plugin_dir_path( __FILE__ ) );
 define( 'MMI_XCHANGE_URL',      plugin_dir_url( __FILE__ ) );

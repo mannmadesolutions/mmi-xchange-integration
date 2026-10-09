@@ -894,6 +894,7 @@ class MMI_Xchange_Vendors {
             'image_download_failed'      => 0,
             'image_skipped_non_product'  => 0,
             'image_no_product_match'     => 0,
+            'image_skipped_by_site'      => 0,
         ];
     }
 
@@ -941,6 +942,13 @@ class MMI_Xchange_Vendors {
                 // media-library attachment that never gets attached to
                 // anything, with no admin visibility that it happened.
                 $totals['image_no_product_match']++;
+                continue;
+            }
+
+            // The site may source product pictures elsewhere (mmi-data-pipeline's
+            // filter of the same name): then nothing is downloaded for this product.
+            if ( ! apply_filters( 'mmi_import_product_images', true, $product_id, 'xchange_vendor_media' ) ) {
+                $totals['image_skipped_by_site']++;
                 continue;
             }
 
