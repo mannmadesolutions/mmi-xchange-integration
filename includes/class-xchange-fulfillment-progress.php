@@ -43,6 +43,7 @@ class MMI_Xchange_Fulfillment_Progress {
     const REVERB_META_NOTICE_AT = '_mmi_reverb_delivery_notice_sent_at';
     const REVERB_META_SHIPPED   = '_mmi_reverb_marked_shipped_at';
     const REVERB_META_ERROR     = '_mmi_reverb_fulfillment_sync_error';
+    const REVERB_META_ATTEMPTS  = '_mmi_reverb_fulfillment_sync_attempts';
 
     /** Sort order of `next.key` — what needs the admin first. */
     const RANK = [
@@ -213,23 +214,38 @@ class MMI_Xchange_Fulfillment_Progress {
             : self::step( 'complete', 'Order completed', self::TODO, 'Completed once every item is emailed' );
 
         // ── 6. Reverb close-out (Reverb orders only) ─────────────────────────
+        // Run by mmi-reverb-integration. Without it nothing closes the order,
+        // so the step says so (locked) instead of "runs after…", and a
+        // leftover pending flag doesn't keep the page polling.
         $reverb_live = false;
         if ( (string) $order->get_meta( '_mmi_reverb_order_number' ) !== '' ) {
             $notice_at  = (string) $order->get_meta( self::REVERB_META_NOTICE_AT );
             $shipped_at = (string) $order->get_meta( self::REVERB_META_SHIPPED );
             $error      = (string) $order->get_meta( self::REVERB_META_ERROR );
             $run_at     = self::$reverb_runs[ $order->get_id() ] ?? null;
+            $has_gate   = class_exists( 'MMI_Feature_Gate' );
+            $reverb_on  = ! $has_gate || MMI_Feature_Gate::is_available( 'mmi-reverb-integration' );
             if ( $notice_at !== '' && $shipped_at !== '' ) {
                 $steps[] = self::step( 'reverb', 'Reverb close-out', self::DONE, 'Buyer messaged and marked shipped', $shipped_at );
+            } elseif ( ! $reverb_on ) {
+                $steps[] = self::step( 'reverb', 'Reverb close-out', self::TODO, 'Mark the order shipped on Reverb yourself' );
             } elseif ( $run_at !== null || (string) $order->get_meta( self::REVERB_META_PENDING ) === '1' ) {
                 $reverb_live = true;
-                $steps[]     = self::step( 'reverb', 'Reverb close-out', self::ACTIVE, 'Messaging the buyer and marking shipped' . ( $run_at ? ' at ' . wp_date( 'H:i', $run_at ) : '' ) . ( $error !== '' ? " (last try: {$error})" : '' ) );
+                // A first run is moments away (or a fallback minutes out);
+                // only a retry has a time worth showing.
+                $retrying    = (int) $order->get_meta( self::REVERB_META_ATTEMPTS ) > 0 && $run_at;
+                $steps[]     = self::step( 'reverb', 'Reverb close-out', self::ACTIVE, ( $retrying ? 'Retrying at ' . wp_date( 'H:i', $run_at ) : 'Messaging the buyer and marking shipped' ) . ( $error !== '' ? " (last try: {$error})" : '' ) );
             } elseif ( $error !== '' ) {
                 $steps[] = self::step( 'reverb', 'Reverb close-out', self::ATTENTION, $error );
             } elseif ( $status === 'completed' ) {
                 $steps[] = self::step( 'reverb', 'Reverb close-out', self::TODO, 'No Reverb message or shipping recorded for this order' );
             } else {
                 $steps[] = self::step( 'reverb', 'Reverb close-out', self::TODO, 'Runs after the order completes' );
+            }
+            // A close-out that already happened is history, not a locked feature.
+            $last = count( $steps ) - 1;
+            if ( $has_gate && $steps[ $last ]['state'] !== self::DONE && ! MMI_Feature_Gate::is_shown_available( 'mmi-reverb-integration' ) ) {
+                $steps[ $last ]['locked'] = 'reverb.closeout';
             }
         }
 

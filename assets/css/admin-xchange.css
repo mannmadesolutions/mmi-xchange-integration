@@ -817,13 +817,14 @@
     font-weight: 600;
 }
 
-/* Semantic hooks for the 5 detail-table columns (Product/Qty/Cost/Paid/
-   Margin) — added so per-column styling/JS targeting doesn't require
+/* Semantic hooks for the 6 detail-table columns (Product/Qty/Cost/Paid/
+   Fees/Margin) — added so per-column styling/JS targeting doesn't require
    nth-child() guessing. Column order/widths are unchanged, purely additive. */
 .mmi-x-po-td-product,
 .mmi-x-po-td-qty,
 .mmi-x-po-td-cost,
 .mmi-x-po-td-paid,
+.mmi-x-po-td-fees,
 .mmi-x-po-td-margin {
     /* intentionally empty — semantic hooks only, see comment above */
 }
@@ -1242,10 +1243,10 @@
 .mmi-x-confirm {
     margin: 0 0 14px;
     padding: 12px 16px;
-    border: 1px solid var(--mmi-warning, #dba617);
+    border: 1px solid var(--mmi-primary, #45852C);
     border-left-width: 4px;
     border-radius: 4px;
-    background: var(--mmi-warning-bg, #fff3cd);
+    background: var(--mmi-primary-lightest, #f0f6ed);
     white-space: normal;
 }
 .mmi-x-confirm-title {

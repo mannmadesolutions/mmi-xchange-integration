@@ -112,6 +112,9 @@ class MMI_Xchange_Admin_Menu extends MMI_Supplier_Admin {
             // confirm step (POOrdersPanel.renderConfirmHtml()).
             'autoSendEmail'      => class_exists( 'MMI_Xchange_Auto_Fulfillment' ) && MMI_Xchange_Auto_Fulfillment::is_enabled(),
             'skipCompletedEmail' => MMI_Settings::get( 'mmi_xchange_skip_wc_completed_email', 'yes' ) !== 'no',
+            // mmi-reverb-integration closes out Reverb orders after delivery.
+            'reverbCloseout'     => class_exists( 'MMI_Reverb_Fulfillment_Sync' ) && MMI_Reverb_Fulfillment_Sync::is_enabled(),
+            'reverbCarrier'      => class_exists( 'MMI_Reverb_Fulfillment_Sync' ) ? MMI_Reverb_Fulfillment_Sync::CARRIER_NAME : '',
         ] );
 
         // Price History modal — same Chart.js CDN handle/version

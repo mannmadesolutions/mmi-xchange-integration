@@ -489,27 +489,12 @@ class MMI_Xchange_Checkout {
      * MMI_Marketplace_Order_Sources's Reverb registration for the current
      * implementation of this check.)
      *
-     * MMI_Marketplace_Order_Sources lived in mmi-hub, which was deleted
-     * suite-wide 2026-09-17 (mmi-hub-elimination migration) without this
-     * class being migrated to the shared library or anywhere else — it no
-     * longer exists anywhere in this codebase, confirmed via grep. The
-     * `class_exists()` guard below therefore now ALWAYS evaluates false, so
-     * this returned `false` unconditionally: every order looked
-     * not-externally-sourced, silently reopening the exact duplicate-
-     * purchase risk this check exists to prevent (see AGENTS.md's "XChange
-     * Cross-Channel Duplicate-Order Risk" incident) for any order actually
-     * imported from Reverb or another marketplace. Fixed to fail closed
-     * instead: until MMI_Marketplace_Order_Sources is rebuilt somewhere
-     * (e.g. in mmi-admin's shared library) and mmi-reverb-integration's
-     * registration call succeeds again, every order is treated as
-     * externally sourced, which blocks automatic XChange reserve/finalize
-     * suite-wide and forces manual fulfillment via the Recent XChange
-     * Orders panel — the safe direction to fail, since a missed automatic
-     * reservation costs a few minutes of admin time and a wrongly-allowed
-     * one costs a real duplicate purchase. The same dangling dependency
-     * still needs fixing in mmi-xchange-integration's
-     * class-xchange-fulfillment-queue.php and mmi-reverb-integration.php's
-     * registration call site — out of scope for this file alone.
+     * The registry is in the shared library this plugin bundles, and it
+     * carries built-in detection for Reverb that reads only order data, so a
+     * Reverb order is still recognised when mmi-reverb-integration is
+     * inactive (2026-10-18; before that, an inactive Reverb plugin meant an
+     * empty registry and this returned false for every Reverb order). The
+     * class_exists() guard still fails closed if the class is ever missing.
      */
     public static function is_externally_sourced( \WC_Order $order ): bool {
         if ( ! class_exists( 'MMI_Marketplace_Order_Sources' ) ) {

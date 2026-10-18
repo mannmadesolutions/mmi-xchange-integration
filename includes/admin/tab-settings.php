@@ -282,6 +282,7 @@ $last_issue       = MMI_Xchange_Account::get_last_issue();
     <p><button type="submit" name="mmi_xchange_save_settings" value="1" class="button button-primary"><?php esc_html_e( 'Save Settings', 'mmi-xchange-integration' ); ?></button></p>
 </form>
 
+<?php ob_start(); ?>
 <div class="mmi-xchange-card mmi-flat-card mmi-x-card-narrow" id="mmi-x-cogs-card">
     <h2>🏷️ <?php esc_html_e( 'XChange Catalog COGS Backfill', 'mmi-xchange-integration' ); ?></h2>
     <p class="description"><?php esc_html_e( 'Auto-matches dealer price from the XChange catalog onto existing Reverb orders.', 'mmi-xchange-integration' ); ?></p>
@@ -297,3 +298,12 @@ $last_issue       = MMI_Xchange_Account::get_last_issue();
     <button type="button" id="mmi-x-cogs-backfill-btn" class="button">▶ <?php esc_html_e( 'Run COGS Backfill', 'mmi-xchange-integration' ); ?></button>
     <span class="mmi-loading mmi-hidden" id="mmi-x-cogs-spinner"></span>
 </div>
+<?php
+// Reads and writes mmi-reverb-integration's order and cost tables: greyed and
+// locked without it (the AJAX handlers refuse too).
+if ( class_exists( 'MMI_Feature_Gate' ) ) {
+    MMI_Feature_Gate::render_overlay( 'reverb.cogs_backfill', (string) ob_get_clean(), true );
+} else {
+    echo ob_get_clean(); // phpcs:ignore WordPress.Security.EscapeOutput -- markup above, escaped where built.
+}
+?>

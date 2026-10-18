@@ -1339,14 +1339,27 @@ class MMI_Xchange_Ajax {
 
     /* ── COGS backfill ─────────────────────────────────────────────────────── */
 
+    /**
+     * The backfill reads and writes mmi-reverb-integration's order and cost
+     * tables. Refuse when that plugin isn't active, so a direct request can't
+     * get past the locked card (AGENTS.md › Gated Feature Disclosure).
+     */
+    private static function require_reverb_tables(): void {
+        if ( class_exists( 'MMI_Feature_Gate' ) && ! MMI_Feature_Gate::is_available( 'mmi-reverb-integration' ) ) {
+            wp_send_json_error( [ 'message' => __( 'Requires MMI Reverb Integration.', 'mmi-xchange-integration' ) ] );
+        }
+    }
+
     public static function cogs_status(): void {
         self::guard( 'admin' );
+        self::require_reverb_tables();
 
         wp_send_json_success( MMI_Xchange_COGS::backfill_status() );
     }
 
     public static function cogs_backfill_batch(): void {
         self::guard( 'admin' );
+        self::require_reverb_tables();
 
         $offset = absint( $_POST['offset'] ?? 0 );
         if ( $offset === 0 ) {

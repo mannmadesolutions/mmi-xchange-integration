@@ -718,7 +718,8 @@
                     this.manualOpen[$details.data('order-id')] = e.target.open;
                 }
             }, true);
-            document.addEventListener('visibilitychange', () => this.schedulePoll());
+            // Back on the tab: check now rather than after a full interval.
+            document.addEventListener('visibilitychange', () => (document.hidden ? this.schedulePoll() : this.poll(this.pollTargets().ids)));
             $(document).on('click', '.mmi-x-po-order-row', function (e) {
                 if ($(e.target).is('a, a *, button, button *')) {
                     return; // let the order-# link / Fulfill button handle their own click
@@ -1008,14 +1009,33 @@
         // The detail strip's top line: order #, status, marketplace badge and
         // the one action this order needs (or the reason there isn't one),
         // pushed right. Re-rendered in place by the live progress check.
+        // Marketplace logo for an order that came from a marketplace, linked
+        // to the order there. When the marketplace's plugin isn't active the
+        // logo still shows, greyed with a lock and a tooltip saying what the
+        // plugin adds (MMI_Feature_Gate, source_locked from the server).
+        sourceBadgeHtml(o, extraClass) {
+            if (!o.source_logo_url) {
+                return '';
+            }
+            const cls = `mmi-marketplace-badge${extraClass ? ` ${extraClass}` : ''}`;
+            if (o.source_locked && window.MMIGate) {
+                return window.MMIGate.overlayHtml(o.source_feature, `<img class="${cls}" src="${safeUrl(o.source_logo_url)}" alt="${escapeHtml(o.source_label)}">`);
+            }
+            const img = `<img class="${cls}" src="${safeUrl(o.source_logo_url)}" alt="${escapeHtml(o.source_label)}" title="${escapeHtml(o.source_label)}">`;
+            return o.source_order_url
+                ? `<a href="${safeUrl(o.source_order_url)}" target="_blank" rel="noopener noreferrer" title="View on ${escapeHtml(o.source_label)}">${img}</a>`
+                : img;
+        },
+
+        // A feature mmi-reverb-integration adds, shown locked when it isn't
+        // active (or is being previewed as missing).
+        reverbLocked() {
+            return !!window.MMIGate && !window.MMIGate.isAvailable('mmi-reverb-integration');
+        },
+
         renderDetailHeaderHtml(order) {
             const statusClass = STATUS_BADGE_CLASS[order.status] || '';
-            const sourceBadgeImg = order.source_logo_url
-                ? `<img class="mmi-marketplace-badge" src="${safeUrl(order.source_logo_url)}" alt="${escapeHtml(order.source_label)}" title="${escapeHtml(order.source_label)}">`
-                : '';
-            const sourceBadge = sourceBadgeImg && order.source_order_url
-                ? `<a href="${safeUrl(order.source_order_url)}" target="_blank" rel="noopener noreferrer" title="View on ${escapeHtml(order.source_label)}">${sourceBadgeImg}</a>`
-                : sourceBadgeImg;
+            const sourceBadge = this.sourceBadgeHtml(order, '');
             const next = (order.progress && order.progress.next) || {};
             let action;
             if (this.liveRuns[order.order_id]) {
@@ -1080,9 +1100,7 @@
             }
             const completeStep = 'Mark the order Completed once every XChange item is emailed'
                 + (settings.skipCompletedEmail ? ' (WooCommerce\'s own "Completed order" email is skipped).' : ' (the customer also gets WooCommerce\'s "Completed order" email).');
-            const reverbStep = order.reverb_order_number
-                ? `<li>Message the buyer on Reverb and mark Reverb order #${escapeHtml(order.reverb_order_number)} shipped.</li>`
-                : '';
+            const reverbStep = this.reverbStepHtml([order]);
             const remaining = order.items.filter((i) => !i.placed_po && i.fulfillment_status !== 'fulfilled').length;
             const multiNote = remaining > 1
                 ? `<p class="description">This order has ${remaining} XChange items still to buy; this buys ${escapeHtml(item.sku)} only. Fulfill again for the next one, or use "Fulfill together" above.</p>`
@@ -1101,6 +1119,29 @@
                     <button type="button" class="button mmi-x-po-confirm-cancel" data-order-id="${order.order_id}">Cancel</button>
                 </div>
             </div></div>`;
+        },
+
+        // Confirm step for the Reverb close-out mmi-reverb-integration runs
+        // once an order is complete (MMI_Reverb_Fulfillment_Sync): shipped
+        // with tracking, which ends the order on Reverb. When that setting
+        // is off it says so, since nothing will close the order.
+        reverbStepHtml(orders) {
+            const numbers = orders.map((o) => o.reverb_order_number).filter(Boolean).map((n) => escapeHtml(n));
+            if (numbers.length === 0) {
+                return '';
+            }
+            const settings = window.mmiXchange || {};
+            const one = numbers.length === 1;
+            const label = `Reverb order${one ? '' : 's'} ${numbers.map((n) => `#${n}`).join(', ')}`;
+            if (POOrdersPanel.reverbLocked()) {
+                const locked = window.MMIGate.overlayHtml('reverb.closeout', `Close out ${label} automatically`);
+                return `<li>${locked} — mark ${one ? 'it' : 'them'} shipped on Reverb yourself.</li>`;
+            }
+            if (!settings.reverbCloseout) {
+                return `<li>Leave ${label} open: "Close Out Delivered Software" is off in Reverb settings, so mark ${one ? 'it' : 'them'} shipped on Reverb yourself.</li>`;
+            }
+            const tracking = one ? `tracking #${numbers[0]}` : 'each order\'s own number as tracking';
+            return `<li>Close out ${label}: mark ${one ? 'it' : 'them'} shipped (carrier "${escapeHtml(settings.reverbCarrier || '')}", ${tracking}) and message the buyer that the license was emailed.</li>`;
         },
 
         // Step-by-step progress, from what the server reads back out of each
@@ -1128,9 +1169,12 @@
             const STATE_LABEL = { done: 'Done', active: 'In progress', waiting: 'Waiting', attention: 'Needs you', todo: 'Not yet' };
             const items = steps.map((st) => {
                 const link = st.link ? ` <a href="${safeUrl(st.link)}" target="_blank" rel="noopener">Open in Stripe →</a>` : '';
+                const stepLabel = st.locked && window.MMIGate
+                    ? window.MMIGate.overlayHtml(st.locked, escapeHtml(st.label))
+                    : escapeHtml(st.label);
                 return `<li class="mmi-x-step mmi-x-step--${escapeHtml(st.state)}">
                     <span class="mmi-x-step-icon" aria-hidden="true"></span>
-                    <span class="mmi-x-step-label">${escapeHtml(st.label)}<span class="screen-reader-text"> (${STATE_LABEL[st.state] || ''})</span></span>
+                    <span class="mmi-x-step-label">${stepLabel}<span class="screen-reader-text"> (${STATE_LABEL[st.state] || ''})</span></span>
                     <span class="mmi-x-step-text">${escapeHtml(st.text)}${link}</span>
                     <span class="mmi-x-step-at">${escapeHtml(st.at || '')}</span>
                 </li>`;
@@ -1197,9 +1241,17 @@
         // Live per-SKU cost table (Our Cost / Customer Paid / Margin) —
         // modeled on WooCommerce's own order-preview table.
         renderCostHtml(order, results) {
+            // Marketplace fees are charged per order; each item carries its
+            // share of them by what it sold for.
+            const fees = order.fees || null;
+            const orderPaid = (order.items || []).reduce((sum, i) => sum + (parseFloat(i.line_total) || 0), 0);
+            const feeTitle = fees
+                ? escapeHtml(Object.entries(fees.parts || {}).map(([label, amount]) => `${label}: ${parseFloat(amount).toFixed(2)}`)
+                    .concat(`${fees.source} payout: ${parseFloat(fees.payout).toFixed(2)}`).join('\n'))
+                : '';
             const rows = results.map(({ item, data, message }) => {
                 if (!data) {
-                    return `<tr><td colspan="4"><span class="mmi-x-po-detail-product">${escapeHtml(item.sku)}</span> — ${escapeHtml(item.product)}<div class="mmi-x-po-detail-sub">${escapeHtml(message)}</div></td></tr>`;
+                    return `<tr><td colspan="6"><span class="mmi-x-po-detail-product">${escapeHtml(item.sku)}</span> — ${escapeHtml(item.product)}<div class="mmi-x-po-detail-sub">${escapeHtml(message)}</div></td></tr>`;
                 }
 
                 // dealer_price never reflects an active promotion — it's the
@@ -1213,7 +1265,8 @@
                 const dealerCost = costBasis || 0;
                 const customerPaid = parseFloat(item.line_total) || 0;
                 const totalCost = dealerCost * (item.qty || 1);
-                const margin = customerPaid - totalCost;
+                const itemFees = fees && orderPaid > 0 ? (parseFloat(fees.total) || 0) * (customerPaid / orderPaid) : 0;
+                const margin = customerPaid - itemFees - totalCost;
                 const marginClass = margin > 0 ? 'success' : 'error';
                 const marginLabel = margin >= 0
                     ? `+${margin.toFixed(2)} ${escapeHtml(data.currency || '')}`
@@ -1286,18 +1339,25 @@
                         ${refPricing ? `<div class="mmi-x-po-detail-sub">${refPricing}</div>` : ''}
                     </td>
                     <td class="mmi-x-po-td-paid">${customerPaid.toFixed(2)} ${escapeHtml(order.currency || '')}</td>
+                    <td class="mmi-x-po-td-fees">${fees
+                        ? `<span title="${feeTitle}">−${itemFees.toFixed(2)} ${escapeHtml(order.currency || '')}</span>`
+                        : (order.reverb_order_number
+                            ? (POOrdersPanel.reverbLocked()
+                                ? window.MMIGate.overlayHtml('reverb.order_fees', '<span class="mmi-x-po-detail-sub">Reverb fees</span>')
+                                : '<span class="mmi-x-po-detail-sub" title="Reverb hasn\'t reported this order\'s fees yet, so the margin doesn\'t include them.">Not reported yet</span>')
+                            : '—')}</td>
                     <td class="mmi-x-po-td-margin"><span class="mmi-badge ${marginClass}">${marginLabel}</span></td>
                 </tr>`;
             }).join('');
 
             const table = `<table class="mmi-x-po-detail-table">
                 <thead>
-                    <tr><th>Product</th><th>Qty</th><th>Our Cost</th><th>Customer Paid</th><th>Margin</th></tr>
+                    <tr><th>Product</th><th>Qty</th><th>Our Cost</th><th>Customer Paid</th><th>Fees</th><th>Margin</th></tr>
                 </thead>
                 <tbody>${rows}</tbody>
             </table>`;
 
-            const note = '<p class="mmi-x-timestamp">🔒 Cost at purchase = the real XChange price captured when this order was actually fulfilled. ⏱ Live estimate = today\'s XChange price, used only when no purchase-time snapshot exists for this order. Either way, margin is our cost × qty vs. what the customer paid (using the active promo price when one applies) and does not account for XChange fees, taxes, or shipping.</p>';
+            const note = '<p class="mmi-x-timestamp">🔒 Cost at purchase = the real XChange price captured when this order was actually fulfilled. ⏱ Live estimate = today\'s XChange price, used only when no purchase-time snapshot exists for this order. Margin = what the customer paid, minus the marketplace\'s fees on the order (Reverb\'s selling and payment-processing fees, as Reverb reported them; hover for the breakdown), minus our cost × qty (using the active promo price when one applies). It does not account for XChange fees, taxes, or shipping.</p>';
             const refreshBtn = `<button type="button" class="button button-small mmi-x-po-detail-refresh" data-order-id="${order.order_id}">↺ Refresh</button>`;
 
             return `${table}${note}${refreshBtn}`;
@@ -1574,11 +1634,15 @@
             // failed attempt (see the auto-status panel's error states
             // above, whose "Convert manually instead" link reveals this
             // same form).
-            const requestEmailBtn = order.reverb_available
-                ? `<button type="button" class="button button-small mmi-x-guest-request-email-btn" data-order-id="${order.order_id}">📨 Request Email via Reverb</button>
+            let requestEmailBtn = '';
+            if (order.reverb_order_number && (!order.reverb_available || POOrdersPanel.reverbLocked()) && window.MMIGate) {
+                requestEmailBtn = `${window.MMIGate.overlayHtml('reverb.email_request', '<button type="button" class="button button-small" disabled>📨 Request Email via Reverb</button>')}
+                <p class="description mmi-x-guest-convert-or">— or, if you already have it —</p>`;
+            } else if (order.reverb_available) {
+                requestEmailBtn = `<button type="button" class="button button-small mmi-x-guest-request-email-btn" data-order-id="${order.order_id}">📨 Request Email via Reverb</button>
                 <p class="description">Asks the buyer to reply with their real email — no need to already know it.</p>
-                <p class="description mmi-x-guest-convert-or">— or, if you already have it —</p>`
-                : '';
+                <p class="description mmi-x-guest-convert-or">— or, if you already have it —</p>`;
+            }
 
             return `${requestEmailBtn}
                 <div class="mmi-x-field-row">
@@ -1721,12 +1785,7 @@
             const $orderCell = $('<td data-source="wc">');
             const $orderInner = $('<div class="mmi-x-po-source-cell">');
             $orderInner.append($('<a>').attr({ href: o.edit_url, target: '_blank', rel: 'noopener' }).text('#' + o.order_number));
-            if (o.source_logo_url) {
-                const $badgeImg = $('<img class="mmi-marketplace-badge mmi-x-po-order-badge">').attr({ src: o.source_logo_url, alt: o.source_label, title: o.source_label });
-                $orderInner.append(o.source_order_url
-                    ? $('<a>').attr({ href: o.source_order_url, target: '_blank', rel: 'noopener noreferrer', title: `View on ${o.source_label}` }).append($badgeImg)
-                    : $badgeImg);
-            }
+            $orderInner.append(this.sourceBadgeHtml(o, 'mmi-x-po-order-badge'));
             $orderCell.append($orderInner);
             $tr.append($orderCell);
 
@@ -2860,6 +2919,7 @@
                     <li>${charge}</li>
                     <li>${emailStep}</li>
                     <li>Complete each order once all its items are emailed.</li>
+                    ${this.reverbStepHtml(group.orders)}
                 </ol>
                 <div class="mmi-x-confirm-actions">
                     <button type="button" class="button button-primary mmi-x-bundle-go" data-group="${key}">Buy &amp; fulfill ${group.items.length}</button>
@@ -2886,8 +2946,11 @@
             const status = covered.length > 0
                 ? `📧 Real email requested on order #${escapeHtml(on)} — covers ${covered.length} of ${relayed.length} relayed orders`
                 : '⚠ Buyer\'s email is a marketplace relay';
-            if (!relayed[0].reverb_available) {
-                return `<span class="mmi-x-bundle-group-meta">${status} — confirm their real email first</span>`;
+            if (!relayed[0].reverb_available || POOrdersPanel.reverbLocked()) {
+                const locked = relayed[0].reverb_order_number && window.MMIGate
+                    ? ` ${window.MMIGate.overlayHtml('reverb.email_request', `<button type="button" class="button button-small" disabled>📨 Request Email via Reverb (all ${relayed.length} orders)</button>`)}`
+                    : '';
+                return `<span class="mmi-x-bundle-group-meta">${status} — confirm their real email first${locked}</span>`;
             }
             // Re-asking on the order that already has a conversation keeps
             // the buyer in one thread; the send then joins the rest.
@@ -3706,9 +3769,12 @@
                 $(SELECTORS.statImported).text(t.already_imported_attachments ?? '—');
 
                 if (res.data.products_json_missing) {
-                    $(SELECTORS.imageStatsNote)
-                        .removeClass('mmi-hidden')
-                        .text('No cached Xchange product feed found yet — run a catalog fetch first (mmi-data-pipeline) to populate these numbers.');
+                    const $note = $(SELECTORS.imageStatsNote).removeClass('mmi-hidden');
+                    if (window.MMIGate && !window.MMIGate.isAvailable('mmi-data-pipeline')) {
+                        $note.html(window.MMIGate.overlayHtml('pipeline.feed_counts', escapeHtml('Product and image counts come from the XChange catalog that MMI Data Pipeline fetches.')));
+                    } else {
+                        $note.text('No cached Xchange product feed found yet — run a catalog fetch first (mmi-data-pipeline) to populate these numbers.');
+                    }
                 }
 
                 // Row data (allVendors) may already be loaded; re-render to pick
@@ -4001,7 +4067,7 @@
 
     const CogsBackfill = {
         init() {
-            if ($(SELECTORS.cogsBackfillBtn).length === 0) {
+            if ($(SELECTORS.cogsBackfillBtn).length === 0 || $(SELECTORS.cogsBackfillBtn).closest('.mmi-is-locked').length) {
                 return;
             }
             this.loadStatus();

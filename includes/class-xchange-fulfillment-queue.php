@@ -126,13 +126,10 @@ class MMI_Xchange_Fulfillment_Queue {
         // (which delegates to the same registry) or drift as new
         // marketplaces are added.
         //
-        // MMI_Marketplace_Order_Sources lived in mmi-hub, deleted
-        // suite-wide 2026-09-17 without being migrated — it no longer
-        // exists, so $source is always null here and this badge never
-        // shows a marketplace. Purely cosmetic: the actual fulfillment
-        // block for externally-sourced orders lives in
-        // MMI_Xchange_Checkout::is_externally_sourced(), which fails
-        // closed independently of this display value.
+        //
+        // A source can match while its plugin is inactive (built-in
+        // detection from order data); the row then shows the badge as a
+        // locked feature (provider_active false → source_locked).
         $source = class_exists( 'MMI_Marketplace_Order_Sources' )
             ? MMI_Marketplace_Order_Sources::get_source_for_order( $order )
             : null;
@@ -197,6 +194,11 @@ class MMI_Xchange_Fulfillment_Queue {
             'source_label'    => $source['label'] ?? '',
             'source_logo_url' => $source['logo_url'] ?? '',
             'source_order_url' => $source['order_url'] ?? '',
+            // The marketplace's own plugin isn't running (or a staff preview
+            // shows it as missing): the logo renders greyed and locked.
+            'source_locked'   => $source !== null && ( empty( $source['provider_active'] )
+                || ( class_exists( 'MMI_Feature_Gate' ) && ! MMI_Feature_Gate::is_shown_available( (string) ( $source['provider'] ?? '' ) ) ) ),
+            'source_feature'  => $source !== null ? $source['key'] . '.order_source' : '',
             // Last fulfillment-email attempt (success or failure) —
             // previously only visible in MMI_Logger's log file, not
             // from this UI, which is exactly where an admin looks after
@@ -245,6 +247,20 @@ class MMI_Xchange_Fulfillment_Queue {
             $order_row['xchange_vendor']  = $xrow['vendor_name'];
             $order_row['xchange_price']   = $xrow['price'];
             $order_row['xchange_in_ccsa'] = $xrow['in_ccsa'];
+        }
+        unset( $order_row );
+
+        /**
+         * Marketplace fees per order (mmi-reverb-integration adds Reverb's
+         * selling and payment-processing fees), so the margin is what lands
+         * in the bank, not what the customer paid. One call per page.
+         *
+         * @param array $fees      order_id => array{source:string, total:float, payout:float, parts:array<string,float>}
+         * @param int[] $order_ids
+         */
+        $fees = apply_filters( 'mmi_xchange_order_fees', [], array_column( $orders, 'order_id' ) );
+        foreach ( $orders as &$order_row ) {
+            $order_row['fees'] = is_array( $fees ) ? ( $fees[ $order_row['order_id'] ] ?? null ) : null;
         }
         unset( $order_row );
 
